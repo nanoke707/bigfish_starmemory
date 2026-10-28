@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import inspect
 import math
 import time
 from collections.abc import Awaitable, Callable
@@ -487,7 +488,10 @@ def build_routes(
         if settings is None:
             return _err("设置功能不可用（插件未拿到 AstrBotConfig）")
         try:
-            providers = settings.providers() or {"llm": [], "embedding": []}
+            providers = settings.providers()
+            if inspect.isawaitable(providers):
+                providers = await providers
+            providers = providers or {"llm": [], "embedding": []}
         except Exception as exc:  # noqa: BLE001
             providers = {"llm": [], "embedding": []}
             providers["_error"] = str(exc)

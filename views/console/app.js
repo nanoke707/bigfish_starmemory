@@ -444,17 +444,28 @@
 
     if (provKey) {
       var list = providers[provKey] || [];
+      var defaultId = providers[provKey === "llm" ? "default_llm" : "default_embedding"] || "";
       var opts = ['<option value="">（默认）跟随 AstrBot 当前选择</option>'];
       var found = String(value) === "";
       list.forEach(function (p) {
-        if (p.id === String(value)) found = true;
-        opts.push('<option value="' + esc(p.id) + '"' + (p.id === String(value) ? " selected" : "") + ">" +
-          esc(p.id) + (p.model ? " · " + esc(p.model) : "") + "</option>");
+        var pid = String(p.id);
+        if (pid === String(value)) found = true;
+        var tags = [];
+        if (p.model) tags.push(p.model);
+        if (p.type) tags.push(p.type);
+        var label = pid + (tags.length ? " · " + tags.join(" · ") : "");
+        if (pid === defaultId) label += "（当前默认）";
+        opts.push('<option value="' + esc(pid) + '"' + (pid === String(value) ? " selected" : "") +
+          ' title="' + esc(pid) + '">' + esc(label) + "</option>");
       });
       if (!found && value !== "") {
         opts.push('<option value="' + esc(value) + '" selected>' + esc(value) + "（当前配置）</option>");
       }
       control = '<select id="' + id + '" data-field="' + esc(f.key) + '" data-section="' + esc(sec.name) + '">' + opts.join("") + "</select>";
+      if (!list.length) {
+        control += '<div class="field-hint">没有列出任何提供商：请先在 AstrBot「提供商设置」里添加并启用模型，' +
+          "然后点右上角刷新。留空则始终跟随 AstrBot 当前选择。</div>";
+      }
     } else if (f.options && f.options.length) {
       control = '<select id="' + id + '" data-field="' + esc(f.key) + '" data-section="' + esc(sec.name) + '">' +
         f.options.map(function (o) {
@@ -561,7 +572,8 @@
       document.querySelectorAll(".tabpane").forEach(function (p) { p.classList.remove("active"); });
       tab.classList.add("active");
       document.getElementById("tab-" + tab.dataset.tab).classList.add("active");
-      if (tab.dataset.tab === "settings") loadSettings();
+      // 每次进入设置页都重新拉取：提供商列表可能刚在 AstrBot 里被改动
+      if (tab.dataset.tab === "settings") loadSettings(true);
     });
   });
 

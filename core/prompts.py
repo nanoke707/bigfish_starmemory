@@ -47,9 +47,13 @@ EXTRACTION_SYSTEM = """你是 "{bot_name}" 的记忆管理员。你的主人是�
 - "emotions": 事件发生时的**情绪**数组（0~2 个），每项 {{"type": "...", "intensity": 0~1}}
   type 只能取 joy(开心)/sadness(难过)/anger(生气)/disappointment(失望)/gratitude(感激)/
   trust(信任)/fear(害怕)/surprise(惊讶)/calm(平静)。没有明显情绪就给空数组。
-- "event_time": **事情真正发生的时间**，用对话里出现的原话（如 "上周三"、"昨天"、"3天前"、
-  "2024-05-01"）。**对话里没有明确提到时间就填 ""，绝对不要把"现在"当成事件时间，也不要编造。**
-- "event_time_precision": 时间精度，取值 exact(精确到时分)/day(精确到天)/approximate(大概)/unknown(不详)。
+- "event_time": **事情真正发生的时间**，写成绝对时间 "YYYY-MM-DD HH:MM"（精确到分钟即可）。
+  对话记录里每一行开头的 [日期 时间] 就是**那句话被说出的时刻**：如果对话里出现
+  "昨天""上周三""三天前"这类相对说法，就以**那一行的时间戳**为基准换算成绝对时间。
+  如果说的是"每年都"这种重复的日子（如生日、纪念日），填**最近一次已经发生**的日期；
+  如果说的是将来的安排（如"下周的考试"），填将来的日期。
+  **对话里没有提到时间就填 ""，绝对不要把"现在"当成事件时间，也不要编造。**
+- "event_time_precision": 时间精度，取值 exact(精确到分)/day(只知道是哪天)/approximate(大概)/unknown(不详)。
   填空字符串时填 "unknown"。
 - "pinned": 仅当对话者明确要求"永远记住"时为 true，否则一律 false
 
@@ -72,7 +76,7 @@ EXTRACTION_SYSTEM = """你是 "{bot_name}" 的记忆管理员。你的主人是�
 {{"memories": [{{"content": "...", "details": ["..."], "tags": ["..."], "type": "event",
  "importance": 0.6, "valence": -0.5, "arousal": 0.6,
  "emotions": [{{"type": "anger", "intensity": 0.8}}],
- "event_time": "上周三", "event_time_precision": "day", "pinned": false}}],
+ "event_time": "2026-05-01 14:30", "event_time_precision": "exact", "pinned": false}}],
  "mood_delta": {{"valence": 0.1, "arousal": 0.1, "affection": 0.05}}, "mood_reason": "...",
  "used_memory_ids": [], "relations": [], "emotion_updates": []}}
 

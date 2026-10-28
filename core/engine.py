@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -63,6 +64,33 @@ from .prompts import RETRY_SUFFIX, build_extraction_messages
 from .storage import StarStore
 from .text import as_tag_list, clamp, content_hash, cosine, keyword_score, parse_lenient_json, truncate_line
 from .timeline import format_event_time, parse_event_time
+
+
+# 转录行的时间戳前缀：[2026-10-28 15:47]
+_LINE_TS_RE = re.compile(r"^\s*\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]")
+
+
+def _transcript_reference_ts(transcript_lines: list[str]) -> float | None:
+    """取转录里**最新**一行的时刻，作为相对时间说法的锚点。
+
+    转录行由 ``main.py`` 统一加上 ``[YYYY-MM-DD HH:MM]`` 前缀；取最新的一行，
+    因为"昨天""刚"这类说法通常出现在最近的几句里。没有可解析的行时返回 None，
+    由调用方退回墙钟时间。
+    """
+    newest: float | None = None
+    for line in transcript_lines:
+        if not line:
+            continue
+        m = _LINE_TS_RE.match(line)
+        if not m:
+            continue
+        try:
+            ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").timestamp()
+        except ValueError:
+            continue
+        if newest is None or ts > newest:
+            newest = ts
+    return newest
 
 
 @dataclass
@@ -378,7 +406,13 @@ class StarMemoryEngine:
                 f"#{s.star.id} | {truncate_line(s.star.content, 60)}" for s in injected_scored
             )
 
-        date = datetime.now().strftime("%Y-%m-%d %H:%M")
+        # 相对时间（"昨天""三天前"）要按**对话发生的时间**换算，而不是按墙钟。
+        # 一段三天前的对话里说"昨天"，指的是三天前的前一天。
+        ref_ts = _transcript_reference_ts(transcript_lines)
+        now = time.time()
+        anchor = ref_ts if ref_ts is not None else now
+
+        date = datetime.fromtimestamp(anchor).strftime("%Y-%m-%d %H:%M")
         if is_group is None:
             is_group = "group" in scope.lower()
         system, user = build_extraction_messages(
@@ -443,7 +477,6 @@ class StarMemoryEngine:
             limit=60,
         )
 
-        now = time.time()
         new_items: list[dict[str, Any]] = []
         for item in raw_memories:
             if not isinstance(item, dict):
@@ -452,8 +485,9 @@ class StarMemoryEngine:
             if len(content) < 4:
                 continue
             # 事件时间：解析不出来就保持"不详"，绝不编造
+            # 锚点用对话时间（而不是墙钟）：相对说法按对话发生的那一刻换算
             event_ts, precision, source = parse_event_time(
-                item.get("event_time"), now=now
+                item.get("event_time"), now=anchor
             )
             if precision == "unknown" and not str(item.get("event_time") or "").strip():
                 event_ts, precision, source = None, "unknown", "unknown"
@@ -623,8 +657,10 @@ class StarMemoryEngine:
             emotional = max(emotional, emo["intensity"])
         half_life = half_life_for_new_memory(item["importance"], emotional, self.params)
         event_ts = item["event_time"]
-        # 事件发生时间优先作为遗忘锚点；没有就用记录时间
-        anchor = event_ts or now
+        # 事件发生时间优先作为遗忘锚点；没有就用记录时间。
+        # 未来的事件（"下周的考试"）不能当锚点——那是现在学到的记忆，
+        # 它的变暗要从现在开始。
+        anchor = event_ts if (event_ts and event_ts <= now) else now
         return Star(
             id=0,
             scope=scope,

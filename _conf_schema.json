@@ -69,6 +69,7 @@
         "description": "Embedding 提供商 ID",
         "hint": "填写 AstrBot 中已启用的 Embedding 提供商 ID 可启用语义检索；留空或调用失败时自动退回关键词匹配，星星不会消失。",
         "type": "string",
+        "_special": "select_provider",
         "default": ""
       }
     }

@@ -31,6 +31,7 @@ from .core import ebbinghaus
 from .core import emotion as emotion_engine
 from .core import formatting
 from .core import mood as mood_engine
+from .core import providers
 from .core import webui
 from .core.config import StarConfig
 from .core.ebbinghaus import EbbinghausParams
@@ -43,7 +44,7 @@ from .core.storage import StarStore
 from .core.text import truncate_line
 from .core.timeline import parse_event_time
 
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 PLUGIN_NAME = "bigfish_starmemory"
 CTX_KEY = "bigfish_starmemory"
 
@@ -183,48 +184,17 @@ class BigfishStarMemory(AstrBotStar):
     # WebUI 设置页：提供商枚举 + 配置热应用
     # ------------------------------------------------------------------
 
-    def _list_providers(self) -> dict:
-        """枚举可用的 LLM / Embedding 提供商，供设置页下拉选择。"""
+    async def _list_providers(self) -> dict:
+        """枚举可用的 LLM / Embedding 提供商，供设置页下拉选择。
 
-        def _pid(p: Any) -> str:
-            for attr in ("id", "provider_id"):
-                try:
-                    value = getattr(p, attr, None)
-                    if callable(value):
-                        value = value()
-                    if isinstance(value, str) and value.strip():
-                        return value.strip()
-                except Exception:  # noqa: BLE001
-                    continue
-            return ""
-
-        def _pmodel(p: Any) -> str:
-            try:
-                meta = getattr(p, "meta", None)
-                if callable(meta):
-                    meta = meta()
-                if isinstance(meta, dict):
-                    return str(meta.get("model") or meta.get("id") or "")
-            except Exception:  # noqa: BLE001
-                pass
-            return ""
-
-        result: dict[str, list[dict[str, str]]] = {"llm": [], "embedding": []}
+        完全来自运行中的 AstrBot（每个用户看到的是他自己保存的提供商），
+        不含任何硬编码的模型名，也不修改 AstrBot 的任何配置。
+        """
         try:
-            for p in (self.context.get_all_providers() or []):
-                pid = _pid(p)
-                if pid:
-                    result["llm"].append({"id": pid, "model": _pmodel(p)})
+            return await providers.list_providers(self.context)
         except Exception as exc:  # noqa: BLE001
-            logger.debug(f"[StarMemory] 枚举 LLM 提供商失败: {exc}")
-        try:
-            for p in (self.context.get_all_embedding_providers() or []):
-                pid = _pid(p)
-                if pid:
-                    result["embedding"].append({"id": pid, "model": _pmodel(p)})
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(f"[StarMemory] 枚举 Embedding 提供商失败: {exc}")
-        return result
+            logger.debug(f"[StarMemory] 枚举提供商失败: {exc}")
+            return {"llm": [], "embedding": [], "default_llm": "", "default_embedding": ""}
 
     def _apply_settings(self, section: str) -> list[str]:
         """配置保存后的热应用：把新值同步到运行中的引擎组件。"""
@@ -290,7 +260,7 @@ class BigfishStarMemory(AstrBotStar):
                     sender = item.get("sender") or "群友"
                     ts = item.get("ts") or time.time()
                     lines.append(
-                        f"[{time.strftime('%m-%d %H:%M', time.localtime(ts))}] "
+                        f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(ts))}] "
                         f"{sender}（群聊旁听）：{truncate_line(text, 200)}"
                     )
         if not lines:
@@ -528,7 +498,7 @@ class BigfishStarMemory(AstrBotStar):
                     sender = item.get("sender") or "群友"
                     ts = item.get("ts") or time.time()
                     lines.append(
-                        f"[{time.strftime('%m-%d %H:%M', time.localtime(ts))}] "
+                        f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(ts))}] "
                         f"{sender}（群聊旁听）：{truncate_line(text, 200)}"
                     )
 
@@ -547,7 +517,7 @@ class BigfishStarMemory(AstrBotStar):
 
     def _ctx_transcript_lines(self, event: AstrMessageEvent, ctx: dict) -> list[str]:
         lines: list[str] = []
-        stamp = time.strftime("%m-%d %H:%M", time.localtime(ctx.get("ts") or time.time()))
+        stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(ctx.get("ts") or time.time()))
         user_text = str(ctx.get("user_text") or "").strip()
         if user_text:
             lines.append(f"[{stamp}] {self._sender_name(event)}：{truncate_line(user_text, 500)}")
@@ -579,7 +549,7 @@ class BigfishStarMemory(AstrBotStar):
     def _buffer_transcript(self, scope: str, ctx: dict) -> None:
         """N 轮一凝时，先在内存里攒着没到点的轮次。"""
         buffer = self._pending_transcript.setdefault(scope, [])
-        stamp = time.strftime("%m-%d %H:%M", time.localtime(ctx.get("ts") or time.time()))
+        stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(ctx.get("ts") or time.time()))
         user_text = str(ctx.get("user_text") or "").strip()
         if user_text:
             buffer.append(f"[{stamp}] 对话者：{truncate_line(user_text, 500)}")
@@ -703,7 +673,7 @@ class BigfishStarMemory(AstrBotStar):
             memory_type(string): fact/event/preference/promise/emotion/skill 之一
             pinned(boolean): 对方明确要求"永远记住"时为 true
             details(string): 逗号分隔的细节，每条细节会按自己的半衰期单独遗忘
-            event_time(string): 事情发生的时间，如 "昨天"、"上周三"、"2024-05-01"；不确定就留空
+            event_time(string): 事情发生的时间，写成绝对时间 "YYYY-MM-DD HH:MM"；不确定就留空
             emotions(string): 逗号分隔的"情绪:强度"，如 "开心:0.6,生气:0.4"
         """
         if not self.cfg.enabled or not self._ready or not self.cfg.enable_memorize_tool:

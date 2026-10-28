@@ -10,11 +10,16 @@
 支持的写法（中文为主，兼顾英文）：
 
 - 绝对时间：``2024-05-01`` / ``2024/5/1`` / ``2024年5月1日`` / ``2024-05-01 14:30``
+  / ``2024-05-01T14:30`` / ``5月1日``（只给月日时按当前年份算，落在未来就退一年）
 - 相对今天：``今天`` / ``昨天`` / ``前天`` / ``大前天``
 - 相对偏移：``3天前`` / ``两天前`` / ``一周前`` / ``半小时前`` / ``10分钟前``
 - 星期：``上周三`` / ``本周五`` / ``星期二``
 - 粗粒度：``上个月`` / ``去年`` / ``前阵子``（只能定位到月/年的起点）
 - 英文：``yesterday`` / ``3 days ago`` / ``last Monday``
+
+**锚点（anchor）**：相对说法必须相对于**这段对话发生的时间**换算，而不是相对于
+"现在"。一段三天前的对话里说"昨天"，指的是三天前的前一天。因此调用方应把对话
+时间作为 ``now`` 传进来（见 :func:`parse_event_time`）；绝对时间不受锚点影响。
 """
 
 from __future__ import annotations
@@ -33,8 +38,6 @@ PRECISION_UNKNOWN = "unknown"      # 无法确定
 SOURCE_STATED = "stated"           # 对话中明确提到
 SOURCE_INFERRED = "inferred"       # 由"昨天/上周"等相对词推断
 SOURCE_UNKNOWN = "unknown"
-
-_DAY = 86400.0
 
 _CN_NUM = {
     "零": 0, "一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
@@ -78,6 +81,77 @@ def _to_ts(dt: datetime) -> float:
     return dt.timestamp()
 
 
+# 带年份的绝对时间：2024-05-01 / 2024/5/1 / 2024年5月1日 / 2024-05-01 14:30 / 2024-05-01T14:30
+_ABS_DATETIME_RE = re.compile(
+    r"(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})\s*[日号]?"
+    r"(?:\s*[T\s]?\s*(\d{1,2})\s*[:：点时]\s*(\d{1,2})?)?"
+)
+# 只给月日：5月1日 / 5月1日 14:30
+_ABS_MONTH_DAY_RE = re.compile(
+    r"(?<!\d)(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?"
+    r"(?:\s*[T\s]?\s*(\d{1,2})\s*[:：点时]\s*(\d{1,2})?)?"
+)
+
+
+def _make_datetime(
+    year: int, month: int, day: int, hour: int | None, minute: int | None
+) -> datetime | None:
+    """组装一个本地时区的 datetime；非法日期返回 None。"""
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    if hour is not None and not (0 <= hour <= 23):
+        hour = None
+    if minute is not None and not (0 <= minute <= 59):
+        minute = None
+    try:
+        return datetime(year, month, day, hour if hour is not None else 12,
+                        minute if minute is not None else 0)
+    except ValueError:
+        return None
+
+
+def _parse_absolute(
+    text: str, base: datetime, now: float
+) -> tuple[float, str, str] | None:
+    """解析绝对时间。解析不出来返回 None。
+
+    只给月日时按 ``base`` 所在年份补全；如果补出来落在未来，说明说的是去年。
+    """
+    m = _ABS_DATETIME_RE.search(text)
+    if m:
+        dt = _make_datetime(
+            int(m.group(1)), int(m.group(2)), int(m.group(3)),
+            int(m.group(4)) if m.group(4) else None,
+            int(m.group(5)) if m.group(5) else None,
+        )
+        if dt is None:
+            return None
+        precision = PRECISION_EXACT if m.group(4) else PRECISION_DAY
+        source = SOURCE_STATED
+        # 未来的日期多半是口误/相对表达，视为不确定
+        if dt.timestamp() > now + 86400:
+            precision = PRECISION_APPROX
+        return _to_ts(dt), precision, source
+
+    m = _ABS_MONTH_DAY_RE.search(text)
+    if m:
+        month, day = int(m.group(1)), int(m.group(2))
+        hour = int(m.group(3)) if m.group(3) else None
+        minute = int(m.group(4)) if m.group(4) else None
+        dt = _make_datetime(base.year, month, day, hour, minute)
+        if dt is None:
+            return None
+        if dt.timestamp() > now + 86400:
+            # 只给月日却落在未来 —— 说的是去年
+            dt = _make_datetime(base.year - 1, month, day, hour, minute)
+            if dt is None:
+                return None
+        precision = PRECISION_EXACT if hour is not None else PRECISION_DAY
+        return _to_ts(dt), precision, SOURCE_STATED
+
+    return None
+
+
 def parse_event_time(
     raw: str | None,
     now: float | None = None,
@@ -87,7 +161,10 @@ def parse_event_time(
     返回 ``(timestamp | None, precision, source)``。
 
     - 无法解析时返回 ``(None, PRECISION_UNKNOWN, SOURCE_UNKNOWN)``；
-    - 永远不返回"现在"来冒充事件时间（除非原文明确写着"刚才/刚刚"）。
+    - 永远不返回"现在"来冒充事件时间（除非原文明确写着"刚才/刚刚"）；
+    - ``now`` 是**锚点**：相对说法（"昨天""三天前"）按它换算。调用方应传这段
+      对话发生的时间，而不是墙钟时间——三天前的对话里的"昨天"是四天前。
+      绝对时间（"2024-05-01 14:30"）不受锚点影响。
     """
     text = (raw or "").strip()
     if not text:
@@ -96,27 +173,10 @@ def parse_event_time(
     now = time.time() if now is None else now
     base = datetime.fromtimestamp(now)
 
-    # ---- 1) 绝对日期 ------------------------------------------------
-    m = re.search(
-        r"(\d{4})\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})\s*[日号]?"
-        r"(?:\s*(\d{1,2})\s*[:：点时]\s*(\d{1,2})?)?",
-        text,
-    )
-    if m:
-        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        hour = int(m.group(4)) if m.group(4) else None
-        minute = int(m.group(5)) if m.group(5) else None
-        if 1 <= month <= 12 and 1 <= day <= 31:
-            try:
-                dt = datetime(year, month, day, hour or 12, minute or 0)
-            except ValueError:
-                return None, PRECISION_UNKNOWN, SOURCE_UNKNOWN
-            precision = PRECISION_EXACT if hour is not None else PRECISION_DAY
-            source = SOURCE_STATED
-            # 未来的日期多半是口误/相对表达，视为不确定
-            if dt.timestamp() > now + 86400:
-                precision = PRECISION_APPROX
-            return _to_ts(dt), precision, source
+    # ---- 1) 绝对时间 ------------------------------------------------
+    absolute = _parse_absolute(text, base, now)
+    if absolute is not None:
+        return absolute
 
     # ---- 2) 今天 / 昨天 / 前天 --------------------------------------
     if "大前天" in text:
@@ -212,29 +272,57 @@ def format_event_time(
     precision: str = PRECISION_UNKNOWN,
     now: float | None = None,
 ) -> str:
-    """把事件时间渲染成人话（供 WebUI 与注入文本使用）。"""
+    """把事件时间渲染成人话（供 WebUI 与注入文本使用）。
+
+    **必须按真实年龄渲染**：精度只表示"这个时间有多确定"，不表示"它有多旧"。
+    早先这里把 approximate 档一律写成"大约一个月前"，于是今天写下的记忆
+    （迁移回填时精度是 approximate）全被标成一个月前——那是显示的 bug，
+    不是数据的问题。
+    """
     if not ts:
         return "时间不详"
     now = time.time() if now is None else now
     dt = datetime.fromtimestamp(ts)
     if precision == PRECISION_EXACT:
         return dt.strftime("%Y-%m-%d %H:%M")
+
+    # 按自然日算年龄：昨天的事就是"1 天前"，不随时刻漂移
+    days = int((_start_of_day(datetime.fromtimestamp(now)) - _start_of_day(dt)).days)
+
+    if days < 0:
+        # 还没发生的事（"下周的考试"）：按将来表述，不能说成"今天"
+        ahead = -days
+        if ahead == 1:
+            return "明天"
+        if ahead <= 30:
+            return f"{ahead} 天后"
+        if ahead <= 365:
+            return f"{round(ahead / 30)} 个月后"
+        return f"{ahead // 365} 年后"
+
     if precision == PRECISION_DAY:
-        days = int((_start_of_day(datetime.fromtimestamp(now)) - _start_of_day(dt)).days)
         if days == 0:
             return "今天"
         if days == 1:
             return "昨天"
-        if 1 < days <= 30:
+        if days <= 30:
             return f"{days} 天前"
         if days <= 365:
             return dt.strftime("%Y-%m-%d")
         return f"{days // 365} 年前"
+
     if precision == PRECISION_APPROX:
-        days = int((now - ts) / _DAY)
-        if days < 40:
+        # 近似时间：说出真实年龄，但保留"大约"的不确定性
+        if days == 0:
+            return "今天"
+        if days == 1:
+            return "昨天"
+        if days <= 30:
+            return f"大约 {days} 天前"
+        if days <= 60:
             return "大约一个月前"
-        if days < 400:
-            return "大约半年前"
-        return "很久以前"
+        if days <= 365:
+            return f"大约 {round(days / 30)} 个月前"
+        return f"大约 {days // 365} 年前"
+
     return dt.strftime("%Y-%m-%d")

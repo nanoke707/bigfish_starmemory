@@ -113,9 +113,18 @@ def retention_from_half_life(elapsed_days: float, half_life_days: float) -> floa
     return max(0.0, min(1.0, value))
 
 
-def memory_anchor(star: Star) -> float:
-    """遗忘曲线的锚点：最近一次有效强化 > 事件发生时间 > 记录创建时间。"""
-    return star.last_reinforced_at or star.event_time or star.created_at or 0.0
+def memory_anchor(star: Star, now: float | None = None) -> float:
+    """遗忘曲线的锚点：最近一次有效强化 > 事件发生时间 > 记录创建时间。
+
+    锚点不能落在未来——"下周的考试"这类记忆是**现在**学到的，它的变暗应该
+    从现在开始；如果拿未来的事件时间当锚点，R 会被 clamp 成 1，这条记忆就永远
+    不会变暗。所以锚点取 ``min(候选, 记录时间, now)``。
+    """
+    anchor = star.last_reinforced_at or star.event_time or star.created_at or 0.0
+    ceiling = star.created_at or anchor
+    if now is not None:
+        ceiling = min(ceiling, now)
+    return min(anchor, ceiling)
 
 
 def star_half_life(star: Star) -> float:
@@ -173,7 +182,7 @@ def detail_half_life_for(
 
 def retention(star: Star, now: float, params: EbbinghausParams) -> float:
     """当前保持率 R ∈ [0,1]，即这棵星星的亮度。"""
-    dt = max(0.0, (now - memory_anchor(star)) / 86400.0)
+    dt = max(0.0, (now - memory_anchor(star, now)) / 86400.0)
     r = retention_from_half_life(dt, star_half_life(star))
     if star.pinned:
         r = max(r, params.pin_floor)
@@ -264,7 +273,7 @@ def reinforced_half_life(
     巩固收益越大——和间隔重复的经典结论一致。
     """
     h = star_half_life(star)
-    dt = max(0.0, (now - memory_anchor(star)) / 86400.0)
+    dt = max(0.0, (now - memory_anchor(star, now)) / 86400.0)
     importance = max(0.0, min(1.0, star.importance))
     spacing = min(1.0, dt / max(_EPS_DAYS, h))
     gain = (
