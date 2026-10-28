@@ -18,6 +18,13 @@
   // 设置页里哪些字段是"提供商下拉框"
   var PROVIDER_FIELD_MAP = { "llm.provider_id": "llm", "embedding.provider_id": "embedding" };
 
+  // 记忆类型的中文名（跟 core/models.py 的 VALID_MEMORY_TYPES 对齐）
+  var TYPE_ZH = {
+    fact: "事实", event: "经历", preference: "偏好", promise: "约定",
+    emotion: "情绪", skill: "技能", commitment: "约定", insight: "灵光",
+    task: "待办", person: "人物", profile: "画像", other: "其他"
+  };
+
   // 页面级异常兜底：出错时在界面上直接说清楚，而不是白屏
   window.addEventListener("error", function (e) {
     console.error("[StarMemory] 脚本异常:", e.message, (e.filename || "") + ":" + (e.lineno || 0));
@@ -44,6 +51,7 @@
     starStatus: "all",
     page: 1,
     settingsLoaded: false,
+    botName: "",
     searchResults: [],
     host: null,
     shadow: null,
@@ -148,6 +156,18 @@
       try {
         window.BSMNeural.mount(host, SR);
         state.themeReady = true;
+        // 主题里点星星 → 打开调试台的完整详情
+        host.__nr = host.__nr || {};
+        host.__nr.openDetail = function (id) { openDetail(id); };
+        // 点恒星上的名字 → 去设置里改 bot 名字
+        host.__nr.openBotSettings = function () {
+          openDrawer();
+          switchDrawerTab("settings");
+          setTimeout(function () {
+            var f = document.querySelector('[data-field="bot_name"]');
+            if (f) f.focus();
+          }, 350);
+        };
         bindThemeButtons(SR);
         if (state.overview) pushModel();
       } catch (e) {
@@ -303,7 +323,9 @@
           id: s.id,
           content: s.content,
           scope: s.scope,
+          scopeShort: shortScope(s.scope),
           type: s.type || "fact",
+          typeZh: TYPE_ZH[s.type || "fact"] || s.type || "其他",
           status: s.status,
           retention: s.retention || 0,
           clarity: clarityScore(s.clarity),
@@ -312,7 +334,16 @@
           arousal: s.arousal || 0,
           pinned: !!s.pinned,
           review: Math.min(1, (s.review_count || 0) / 8),
-          scopeIndex: rank[s.scope]
+          scopeIndex: rank[s.scope],
+          // 恒星与黑洞主题要用的细节
+          halfLife: s.half_life_days || 0,
+          recallCount: s.recall_count || 0,
+          reviewCount: s.review_count || 0,
+          reactivateCount: s.reactivate_count || 0,
+          daysSince: s.days_since_anchor || 0,
+          eventTime: s.event_time_label || "时间不详",
+          anchor: s.anchor || "",
+          tags: (s.tags || []).slice(0, 6)
         };
       });
 
@@ -360,6 +391,7 @@
       mood: mood,
       events: buildEvents(),
       dayTarget: 30,
+      botName: state.botName || "大肥鱼",
       recallRate: Math.max(1, Math.round((st.recall || 0) / 60))
     };
   }
@@ -367,6 +399,10 @@
   function pushModel() {
     if (state.host && state.host.__nr && state.host.__nr.setModel) {
       state.host.__nr.setModel(buildModel());
+    }
+    // 主题里点星星 → 打开调试台的完整详情
+    if (state.host && state.host.__nr && !state.host.__nr.openDetail) {
+      state.host.__nr.openDetail = function (id) { openDetail(id); };
     }
   }
 
@@ -517,9 +553,27 @@
     return loadOverview()
       .then(loadStarPool)
       .then(loadFeaturedDetails)
+      .then(loadBotName)
       .then(function () {
         pushModel();
       });
+  }
+
+  // 恒星的名字：general.bot_name（后端本来就有这个配置项，只是读出来）
+  function loadBotName() {
+    return apiGet("/settings").then(function (data) {
+      var sections = (data && data.sections) || [];
+      for (var i = 0; i < sections.length; i++) {
+        if (sections[i].name !== "general") continue;
+        var fields = sections[i].fields || [];
+        for (var j = 0; j < fields.length; j++) {
+          if (fields[j].key === "bot_name" && fields[j].value) {
+            state.botName = String(fields[j].value);
+            return;
+          }
+        }
+      }
+    }).catch(function () { /* 拿不到就用默认名，不影响大屏 */ });
   }
 
   /* ================= 调试台抽屉 ================= */
@@ -979,6 +1033,11 @@
     if (mark) mark.classList.add("hidden");
     apiPost("/settings/set/" + section + "/" + key + "/" + b64urlEncode(raw)).then(function (d) {
       toast(d.note || "已保存并生效");
+      // bot 名字改了，恒星上的名字要跟着变
+      if (section === "general" && key === "bot_name") {
+        state.botName = String(raw);
+        pushModel();
+      }
       if (mark) {
         mark.classList.remove("hidden");
         setTimeout(function () { mark.classList.add("hidden"); }, 2200);

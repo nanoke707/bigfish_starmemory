@@ -97,9 +97,10 @@
   <!-- ================= 主题模板 ================= -->
 <template id="tpl-neural">
 <style>
-/* Layout: 全屏 WebGL 星环做底（每个智能体 = 一团神经元，按钟面围成一圈，CHIEF 在正中；任务交接 = 脉冲沿突触束跳转），
-   上面盖一块 1920×1080 的 HUD 画板按视口等比缩放：左上标题 + 左列 14 个神经团，右列 神经活动热力格 / 突触日志 / 巡检，底部指标条。
-   窄屏或竖屏只留星环和一条精简信息。单一深色视觉，刻意不做浅色版。 */
+/* Layout: 全屏 WebGL 深空做底 —— 正中一颗恒星代表 bot 本体，四周稀稀落落的星星是一条条具体记忆，
+   恒星不远处悬着一个黑洞：星星越暗越被吸过去，靠近视界就消散。
+   上面盖一块 1920×1080 的 HUD 画板按视口等比缩放：左上标题 + 左列 恒星卡/星域/召回热力，
+   右列 记忆详情（悬停截停）+ 召回日志，底部指标条。窄屏只留大图和一条精简信息。单一深色视觉。 */
 :host{
   color-scheme:dark;
   --bg:#03050a; --ink:#e4eaf2; --ink2:#a9b4c3; --mute:#6b7685; --dim:#3c4552;
@@ -119,6 +120,15 @@
 .fit-in{position:relative;width:100%;height:100%}
 .board{position:absolute;left:50%;top:50%;width:1920px;height:1080px;transform:translate(-50%,-50%) scale(var(--s,.5));pointer-events:none}
 .pe{pointer-events:auto}
+
+/* ---------- 3D 里的浮层：恒星 / 黑洞 标签 ---------- */
+.ovl{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.ovl-bot{position:absolute;left:var(--bx,50%);top:var(--by,50%);transform:translate(-50%,-92px);text-align:center;white-space:nowrap}
+.ovl-bot b{display:block;font-family:var(--display);font-size:22px;letter-spacing:.1em;color:#dff8ff;text-shadow:0 0 18px rgba(166,241,255,.75),0 0 4px #000}
+.ovl-bot i{display:block;margin-top:3px;font-style:normal;font-family:var(--cjk);font-size:10.5px;letter-spacing:.16em;color:rgba(166,241,255,.62);text-shadow:0 0 4px #000}
+.ovl-hole{position:absolute;left:var(--hx,50%);top:var(--hy,50%);transform:translate(-50%,44px);text-align:center;white-space:nowrap}
+.ovl-hole b{display:block;font-family:var(--display);font-size:13px;letter-spacing:.18em;color:#ffb877;text-shadow:0 0 14px rgba(255,138,61,.6),0 0 4px #000}
+.ovl-hole i{display:block;margin-top:2px;font-style:normal;font-family:var(--cjk);font-size:10px;letter-spacing:.12em;color:rgba(255,160,90,.55);text-shadow:0 0 4px #000}
 
 /* ---------- 标题 ---------- */
 .hd{position:absolute;left:24px;top:22px;width:560px;text-shadow:0 0 4px var(--bg),0 0 12px var(--bg)}
@@ -151,12 +161,13 @@
 .tb:focus-visible{outline:1px solid var(--ice);outline-offset:2px}
 
 /* ---------- 左列：神经团 ---------- */
-.lt{position:absolute;left:24px;top:236px;bottom:140px;width:384px;display:flex;flex-direction:column}
+.lt{position:absolute;left:24px;top:236px;bottom:140px;width:384px;display:flex;flex-direction:column;gap:12px}
+.lt-scopes{flex:1;min-height:0;display:flex;flex-direction:column}
 .sec-h{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding-bottom:8px;border-bottom:1px solid var(--hair2);margin-bottom:8px}
 .sec-h h2{margin:0;font-family:var(--display);font-weight:400;font-size:11px;letter-spacing:.16em;color:var(--ink);white-space:nowrap}
 .sec-h h2 i{font-style:normal;font-family:var(--cjk);font-size:11px;color:var(--mute);letter-spacing:.06em;margin-left:8px}
 .sec-h span{font-size:9.5px;color:var(--mute);letter-spacing:.08em;white-space:nowrap;font-variant-numeric:tabular-nums}
-.cls{flex:1;min-height:0;display:grid;grid-template-rows:repeat(14,minmax(0,1fr));gap:4px}
+.cls{flex:1;min-height:0;display:flex;flex-direction:column;gap:4px;overflow:hidden}
 .cl{--c:#fff;position:relative;display:grid;grid-template-columns:3px 76px minmax(0,1fr) 46px;grid-template-rows:16px 3px 13px;column-gap:9px;row-gap:3px;align-content:center;min-height:44px;box-sizing:border-box;padding:4px 10px 4px 0;background:linear-gradient(90deg,rgba(4,7,13,.72),rgba(4,7,13,.3));border:1px solid var(--hair);transition:border-color .3s,box-shadow .3s}
 .cl .sw{grid-row:1 / 4;background:var(--c);opacity:.35;transition:opacity .3s}
 .cl .k{font:800 12.5px/16px var(--mono);letter-spacing:.06em;color:var(--c);white-space:nowrap}
@@ -175,16 +186,45 @@
 .conn path{fill:none;stroke-width:1.5;stroke-dasharray:3 5;animation:dash 1s linear infinite;transition:opacity .6s}
 @keyframes dash{to{stroke-dashoffset:-16}}
 
+/* ---------- 恒星卡（bot 本体） ---------- */
+.p-bot{flex:none;padding-bottom:11px}
+.bot-name{font-family:var(--display);font-size:29px;line-height:1.1;letter-spacing:.06em;color:var(--ice);text-shadow:0 0 22px rgba(166,241,255,.45);pointer-events:auto;cursor:pointer}
+.bot-name:hover{color:#fff;text-shadow:0 0 26px rgba(166,241,255,.8)}
+.bot-sub{margin-top:5px;font-family:var(--cjk);font-size:11px;color:var(--ink2);letter-spacing:.02em}
+.bot-bars{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:9px}
+.bot-bars div{background:rgba(186,212,240,.05);border:1px solid var(--hair);padding:5px 7px 6px}
+.bot-bars span{display:block;font-family:var(--cjk);font-size:9.5px;color:var(--mute);letter-spacing:.04em}
+.bot-bars b{font:700 16px/1.5 var(--mono);color:var(--ink);font-variant-numeric:tabular-nums}
+.bot-bars div:nth-child(1) b{color:#a6f1ff}
+.bot-bars div:nth-child(2) b{color:#ffb547}
+.bot-bars div:nth-child(3) b{color:#ff4d5e}
+.bot-hole{margin-top:9px;padding:5px 0 5px 9px;border-left:2px solid #ff8a3d;font-family:var(--cjk);font-size:10.5px;color:var(--mute)}
+.bot-hole b{color:#ffb547;font-family:var(--mono)}
+.cl-empty{font-family:var(--cjk);font-size:11px;color:var(--mute);padding:10px 0}
+
 /* ---------- 右列 ---------- */
 .rc{position:absolute;right:24px;top:84px;bottom:136px;width:388px;display:flex;flex-direction:column;gap:12px}
 .pnl{position:relative;box-sizing:border-box;padding:12px 14px 12px;background:linear-gradient(180deg,rgba(4,7,13,.76),rgba(4,7,13,.42));border:1px solid var(--hair)}
 .pnl::before,.pnl::after{content:"";position:absolute;width:10px;height:10px;border-color:var(--hair2);border-style:solid;pointer-events:none}
 .pnl::before{left:-1px;top:-1px;border-width:1px 0 0 1px}
 .pnl::after{right:-1px;bottom:-1px;border-width:0 1px 1px 0}
-.p-heat{flex:none;height:300px}
+.p-heat{flex:none;height:214px}
+.p-mem{flex:none;min-height:236px}
 .p-feed{flex:1;min-height:0;display:flex;flex-direction:column}
 .p-crawl{flex:none;height:104px}
-.heat{position:relative;height:238px}
+.heat{position:relative;height:152px}
+.mem{font-family:var(--cjk);font-size:12px;line-height:1.75;color:var(--ink)}
+.mem-empty{color:var(--mute);font-size:11.5px;line-height:1.95;padding-top:6px}
+.mem-empty b{color:var(--ice);font-weight:700}
+.mem-k{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
+.mem-k .chip{--c:#a9b4c3;font:700 10px/1 var(--mono);letter-spacing:.06em;padding:4px 6px;border:1px solid var(--hair2);color:var(--c)}
+.mem-t{font-size:13px;line-height:1.75;color:var(--ink);max-height:76px;overflow:hidden;word-break:break-word}
+.mem-bar{height:4px;background:rgba(186,212,240,.1);position:relative;overflow:hidden;margin:9px 0 3px}
+.mem-bar i{position:absolute;left:0;top:0;bottom:0;background:var(--ice);box-shadow:0 0 8px var(--ice);transition:width .3s}
+.mem dl{display:grid;grid-template-columns:76px minmax(0,1fr);gap:2px 10px;margin:8px 0 0;font-size:11px;line-height:1.65}
+.mem dt{color:var(--mute)}
+.mem dd{margin:0;color:var(--ink2);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mem-tip{margin-top:9px;padding-top:7px;border-top:1px solid var(--hair);font-size:10px;color:var(--mute);letter-spacing:.06em}
 .heat canvas{position:absolute;inset:0;width:100%;height:100%}
 .feed{list-style:none;margin:0;padding:0;flex:1;min-height:0;overflow:hidden;font-size:10.5px;line-height:15px}
 .feed li{display:grid;grid-template-columns:56px 62px 32px minmax(0,1fr);gap:8px;white-space:nowrap}
@@ -248,21 +288,25 @@
 @media (prefers-reduced-motion:reduce){.conn path{animation:none}.cl .bar i{transition:none}}
 </style>
 
-<canvas class="gl" id="gl" aria-label="神经星环：11 个星域的神经元，脉冲沿突触束在它们之间传递记忆。拖动可转动视角，点击星域可聚焦"></canvas>
+<canvas class="gl" id="gl" aria-label="记忆星场：正中一颗恒星代表 bot 本体，四周星星是一条条记忆，不远处是吞噬记忆的黑洞。拖动可转动视角，悬停星星可截停并查看这条记忆"></canvas>
 <div class="vig" aria-hidden="true"></div>
+<div class="ovl" id="ovl" aria-hidden="true">
+ <div class="ovl-bot"><b id="ovlBot">—</b><i>记忆恒星 · BOT</i></div>
+ <div class="ovl-hole"><b>黑洞</b><i>遗忘的尽头</i></div>
+</div>
 <div class="nr" id="nr">
 <div class="fit"><div class="fit-in" id="fitIn">
  <div class="board" id="board">
   <header class="hd">
-   <div class="eb">咸鱼星空记忆 · THEME <b>03</b> · SYNAPTIC DISPATCH</div>
-   <h1><span>NEURAL</span><span>RING<em>神经星环</em></span></h1>
-   <div class="sub">CORE 记忆中枢 · 11 个星域接力 · FADE 遗忘站 · MAINT 维护</div>
+   <div class="eb">咸鱼星空记忆 · THEME <b>03</b> · STARFIELD</div>
+   <h1><span>MEMORY</span><span>STARFIELD<em>恒星与黑洞</em></span></h1>
+   <div class="sub">恒星 = bot · 星星 = 一条条记忆 · 黑洞 = 遗忘</div>
    <div class="sub2">真实实例 · 记忆就是星 · <b id="clock">--:--:--</b></div>
   </header>
 
   <div class="cap" id="cap">
    <div class="cap-l">LAST RECALL · 最近一次想起</div>
-   <div class="cap-b"><span class="ck" id="capK">CHIEF</span><span class="cv" id="capV">想起</span><span class="ct" id="capT">—</span></div>
+   <div class="cap-b"><span class="ck" id="capK">—</span><span class="cv" id="capV">想起</span><span class="ct" id="capT">—</span></div>
    <div class="cap-line"></div>
   </div>
 
@@ -273,24 +317,37 @@
   </div>
 
   <section class="lt">
-   <div class="sec-h"><h2>SCOPE CLUSTERS<i>星域</i></h2><span id="ltMeta">— clusters</span></div>
-   <div class="cls" id="cls"></div>
-   <svg class="conn" id="conn" aria-hidden="true"><path id="connP" d="" opacity="0"/></svg>
+   <article class="pnl p-bot">
+    <div class="sec-h"><h2>BOT STAR<i>记忆恒星</i></h2><span id="botState">—</span></div>
+    <div class="bot-name" id="botName">—</div>
+    <div class="bot-sub" id="botSub">—</div>
+    <div class="bot-bars">
+     <div><span>明亮</span><b id="botBright">0</b></div>
+     <div><span>变暗</span><b id="botFaded">0</b></div>
+     <div><span>已消散</span><b id="botGone">0</b></div>
+    </div>
+    <div class="bot-hole">黑洞已吸入 <b id="holeCount">0</b> 颗记忆</div>
+   </article>
+
+   <div class="lt-scopes">
+    <div class="sec-h"><h2>SCOPES<i>星域</i></h2><span id="ltMeta">— scopes</span></div>
+    <div class="cls" id="cls"></div>
+   </div>
+
+   <article class="pnl p-heat">
+    <div class="sec-h"><h2>RECALL ACTIVITY<i>召回热力</i></h2><span>近 30s · 每格 2.5s</span></div>
+    <div class="heat"><canvas id="heat" aria-label="每个星域最近 30 秒的召回强度热力格"></canvas></div>
+   </article>
   </section>
 
   <div class="rc">
-  <article class="pnl p-heat">
-   <div class="sec-h"><h2>RECALL ACTIVITY<i>召回热力</i></h2><span>近 30s · 每格 2.5s</span></div>
-   <div class="heat"><canvas id="heat" aria-label="每个星域最近 30 秒的召回强度热力格"></canvas></div>
+  <article class="pnl p-mem">
+   <div class="sec-h"><h2>MEMORY<i>记忆详情</i></h2><span id="memState">悬停截停</span></div>
+   <div class="mem" id="mem"></div>
   </article>
   <article class="pnl p-feed">
    <div class="sec-h"><h2>RECALL FEED<i>召回日志</i></h2><span id="feedMeta">0 in flight</span></div>
    <ol class="feed" id="feed"></ol>
-  </article>
-  <article class="pnl p-crawl">
-   <div class="sec-h"><h2>MAINTENANCE<i>每日维护</i></h2><span>半衰期扫描</span></div>
-   <div class="cw"><div><span>维护</span><b class="cy" id="cwP">0</b></div><div><span>扫描</span><b id="cwR">0</b></div><div><span>变暗</span><b class="rd" id="cwB">0</b></div><div><span>归档</span><b id="cwF">0</b></div></div>
-   <div class="cw-now" id="cwNow">—</div>
   </article>
   </div>
 
