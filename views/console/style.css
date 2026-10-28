@@ -1,14 +1,12 @@
 /* ============================================================
-   咸鱼星空记忆 · 记忆观测台
-   两款主题：
-     neural —— NEURAL 神经星环（深空蓝 / 电离青 / 琥珀）
-     nebula —— NEBULA 星核星云（冰蓝 / 雪白 / 蜜桃粉）
-   纯原生 CSS，无外部字体与图片依赖。
+   咸鱼星空记忆 · 神经星环观测台
+   大屏本体是 agent-display「03 · NEURAL 神经星环」主题自带样式
+   （在 Shadow DOM 里，与本文件互不干扰）；
+   本文件只负责外壳、调试台抽屉、星星卡片、设置表单这些调试界面。
    ============================================================ */
 
 /* ---------- 主题变量 ---------- */
-:root,
-body[data-theme="neural"] {
+:root {
   --bg-0: #03060e;
   --bg-1: #070d1b;
   --bg-2: #0b1425;
@@ -26,32 +24,7 @@ body[data-theme="neural"] {
   --green: #6ee7a8;
   --red: #ff7a90;
   --pink: #ff9ec4;
-  --stage-bg-a: #060c1a;
-  --stage-bg-b: #01030a;
   --shadow: 0 18px 48px rgba(0, 0, 0, .55);
-}
-
-body[data-theme="nebula"] {
-  --bg-0: #05080f;
-  --bg-1: #0a1018;
-  --bg-2: #101823;
-  --panel: rgba(16, 24, 36, .74);
-  --panel-2: rgba(22, 32, 46, .68);
-  --line: rgba(178, 214, 240, .18);
-  --line-2: rgba(178, 214, 240, .32);
-  --ink-0: #f2f8ff;
-  --ink-1: #b7cbdd;
-  --ink-2: #74879b;
-  --accent: #cfe9ff;
-  --accent-2: #8fd4ff;
-  --gold: #ffd9b0;
-  --violet: #cbb6ff;
-  --green: #a8f0d2;
-  --red: #ff9aa8;
-  --pink: #ffc0d8;
-  --stage-bg-a: #0a1220;
-  --stage-bg-b: #03060c;
-  --shadow: 0 18px 52px rgba(0, 0, 0, .6);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -60,29 +33,28 @@ html, body { height: 100%; }
 
 body {
   font-family: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "Segoe UI", sans-serif;
-  background:
-    radial-gradient(1200px 700px at 78% -12%, color-mix(in srgb, var(--accent-2) 14%, transparent) 0%, transparent 62%),
-    radial-gradient(900px 600px at 8% 110%, color-mix(in srgb, var(--violet) 10%, transparent) 0%, transparent 60%),
-    linear-gradient(180deg, var(--bg-1), var(--bg-0));
+  background: var(--bg-0);
   color: var(--ink-0);
   line-height: 1.55;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
 
-body::before {
-  /* 细网格 + 扫描线，弱化处理，只在大屏上隐约可见 */
-  content: "";
+/* 神经星环主题的挂载点：铺满视口，主题自己是 Shadow DOM */
+.th-host { position: relative; height: 100%; width: 100%; }
+
+/* ---------- 外壳悬浮条（桥接状态） ---------- */
+.shell-bar {
   position: fixed;
-  inset: 0;
+  left: 14px;
+  bottom: 12px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   pointer-events: none;
-  z-index: 0;
-  background-image:
-    linear-gradient(rgba(140, 180, 255, .045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(140, 180, 255, .045) 1px, transparent 1px);
-  background-size: 46px 46px;
-  mask-image: radial-gradient(1400px 900px at 50% 40%, #000 30%, transparent 88%);
 }
+.shell-bar > * { pointer-events: auto; }
 
 .mono, .num, .hud-metrics, .readout, table, .kv .v {
   font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -93,111 +65,6 @@ body::before {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 8px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
-
-/* ---------- 总体布局 ---------- */
-.app {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  grid-template-rows: auto auto 1fr auto;
-  height: 100vh;
-  gap: 10px;
-  padding: 10px 14px 12px;
-}
-
-/* ---------- 顶部 HUD ---------- */
-.hud-top {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  flex-wrap: wrap;
-  padding: 9px 14px;
-  background: linear-gradient(100deg, var(--panel), var(--panel-2));
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  box-shadow: var(--shadow);
-  position: relative;
-  overflow: hidden;
-}
-
-.hud-top::after {
-  content: "";
-  position: absolute;
-  left: 0; right: 0; bottom: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  opacity: .55;
-}
-
-.hud-brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
-
-.hud-logo {
-  font-size: 26px;
-  color: var(--accent);
-  text-shadow: 0 0 18px color-mix(in srgb, var(--accent) 70%, transparent);
-  animation: pulse 3.6s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: .78; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.09); }
-}
-
-.hud-title {
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: .4px;
-  display: flex;
-  align-items: baseline;
-  gap: 9px;
-  white-space: nowrap;
-}
-
-.hud-sub-en {
-  font-size: 9.5px;
-  letter-spacing: 2.4px;
-  color: var(--ink-2);
-  font-family: "JetBrains Mono", Consolas, monospace;
-  font-weight: 400;
-}
-
-.hud-sub { font-size: 11.5px; color: var(--ink-1); margin-top: 1px; }
-
-/* 顶部读数 */
-.hud-metrics {
-  display: flex;
-  gap: 8px;
-  flex: 1;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.metric {
-  min-width: 82px;
-  padding: 5px 11px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, .035), transparent);
-  position: relative;
-  overflow: hidden;
-}
-
-.metric::before {
-  content: "";
-  position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 2px;
-  background: var(--mc, var(--accent));
-  opacity: .85;
-}
-
-.metric .m-val { font-size: 17px; font-weight: 700; color: var(--mc, var(--ink-0)); line-height: 1.15; }
-.metric .m-val small { font-size: 10px; color: var(--ink-2); font-weight: 400; margin-left: 2px; }
-.metric .m-key { font-size: 9.5px; color: var(--ink-2); letter-spacing: .6px; }
-
-/* 操作按钮 */
-.hud-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
 .hud-btn {
   border: 1px solid var(--line);
@@ -249,260 +116,6 @@ body::before {
 
 /* ---------- 主体三栏 ---------- */
 .hud-main {
-  display: grid;
-  grid-template-columns: 286px minmax(0, 1fr) 286px;
-  gap: 10px;
-  min-height: 0;
-}
-
-.hud-rail {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding-right: 2px;
-}
-
-/* ---------- 通用面板 ---------- */
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-  backdrop-filter: blur(3px);
-}
-
-.panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 7px 11px;
-  border-bottom: 1px solid var(--line);
-  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%);
-  flex-shrink: 0;
-}
-
-.panel-title {
-  font-size: 11px;
-  letter-spacing: 1.6px;
-  color: var(--accent);
-  font-family: "JetBrains Mono", Consolas, monospace;
-  text-transform: uppercase;
-}
-
-.panel-note { font-size: 10.5px; color: var(--ink-2); }
-.panel-body { padding: 10px 11px; overflow-y: auto; min-height: 0; }
-.panel-body.is-flush { padding: 0; }
-
-/* 面板四角装饰 */
-.panel {
-  clip-path: polygon(0 9px, 9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%);
-}
-
-/* ---------- 中央舞台 ---------- */
-.stage {
-  position: relative;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  overflow: hidden;
-  min-height: 0;
-  background:
-    radial-gradient(120% 90% at 50% 42%, var(--stage-bg-a) 0%, var(--stage-bg-b) 78%);
-}
-
-.stage-canvas { display: block; width: 100%; height: 100%; }
-.stage.is-fallback .stage-canvas { display: none; }
-
-.stage-chrome { position: absolute; inset: 0; pointer-events: none; }
-
-.stage-corner {
-  position: absolute;
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--accent);
-  opacity: .5;
-}
-
-.stage-corner.tl { top: 8px; left: 8px; border-right: 0; border-bottom: 0; }
-.stage-corner.tr { top: 8px; right: 8px; border-left: 0; border-bottom: 0; }
-.stage-corner.bl { bottom: 8px; left: 8px; border-right: 0; border-top: 0; }
-.stage-corner.br { bottom: 8px; right: 8px; border-left: 0; border-top: 0; }
-
-.stage-head {
-  position: absolute;
-  top: 12px; left: 20px; right: 20px;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  pointer-events: none;
-}
-
-.stage-kicker {
-  display: block;
-  font-size: 9.5px;
-  letter-spacing: 3.4px;
-  color: var(--ink-2);
-  font-family: "JetBrains Mono", Consolas, monospace;
-}
-
-.stage-title { font-size: 19px; font-weight: 700; letter-spacing: 1px; color: var(--ink-0); text-shadow: 0 0 20px color-mix(in srgb, var(--accent) 40%, transparent); }
-.stage-readout { font-size: 11px; color: var(--ink-1); text-align: right; white-space: pre-line; }
-
-.stage-legend {
-  position: absolute;
-  left: 20px;
-  bottom: 16px;
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  font-size: 10.5px;
-  color: var(--ink-1);
-  pointer-events: none;
-}
-
-.legend-item { display: flex; align-items: center; gap: 5px; }
-.legend-swatch { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 8px currentColor; background: currentColor; }
-
-.stage-status {
-  position: absolute;
-  right: 20px;
-  bottom: 16px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 10.5px;
-  color: var(--ink-2);
-  pointer-events: none;
-}
-
-.stage-dot {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--green);
-  box-shadow: 0 0 9px var(--green);
-  animation: pulse 2s ease-in-out infinite;
-}
-
-.stage-dot.is-warn { background: var(--gold); box-shadow: 0 0 9px var(--gold); }
-.stage-dot.is-bad { background: var(--red); box-shadow: 0 0 9px var(--red); }
-
-/* 3D 降级画面 */
-.stage-fallback {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(3, 6, 14, .88);
-  z-index: 3;
-}
-
-.stage-fallback.hidden { display: none; }
-.fallback-inner { text-align: center; padding: 20px; max-width: 520px; }
-.fallback-title { font-size: 15px; color: var(--gold); letter-spacing: 1px; margin-bottom: 6px; }
-.fallback-desc { font-size: 12px; color: var(--ink-1); line-height: 1.8; }
-.fallback-stars { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
-.fallback-chip {
-  font-size: 10.5px;
-  padding: 3px 9px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--ink-1);
-  max-width: 230px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* ---------- 底部面板 ---------- */
-.hud-bottom {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(var(--cols, 6), minmax(0, 1fr));
-  height: 216px;
-  min-height: 0;
-}
-
-.hud-bottom .panel { min-height: 0; }
-
-/* 面板内的小组件 */
-.kv-list { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; }
-.kv-row { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
-.kv-row .k { color: var(--ink-2); flex-shrink: 0; }
-.kv-row .v { color: var(--ink-0); text-align: right; word-break: break-word; }
-.kv-row .v em { font-style: normal; color: var(--accent); }
-
-.bar-track { height: 4px; border-radius: 3px; background: rgba(255, 255, 255, .07); overflow: hidden; margin-top: 3px; }
-.bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--accent-2), var(--accent)); box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 45%, transparent); }
-
-.mini-list { display: flex; flex-direction: column; gap: 6px; font-size: 11px; }
-.mini-item { display: flex; gap: 7px; align-items: baseline; line-height: 1.45; }
-.mini-item .mi-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
-.mini-item .mi-text { flex: 1; min-width: 0; color: var(--ink-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mini-item .mi-time { color: var(--ink-2); font-size: 10px; flex-shrink: 0; font-family: "JetBrains Mono", Consolas, monospace; }
-
-/* 雷达图 */
-.radar-wrap { display: flex; align-items: center; justify-content: center; height: 100%; gap: 10px; }
-.radar-wrap canvas { width: 132px; height: 132px; flex-shrink: 0; }
-.radar-legend { display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: var(--ink-1); }
-.radar-legend i { display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 2px; }
-
-/* 热力格 */
-.heat-grid { display: grid; gap: 2px; grid-template-columns: repeat(var(--heat-cols, 12), 1fr); }
-.heat-cell { aspect-ratio: 1; border-radius: 1px; background: rgba(255, 255, 255, .05); }
-
-/* 仪表盘 */
-.gauge-wrap { display: flex; align-items: center; gap: 12px; height: 100%; }
-.gauge-wrap canvas { width: 108px; height: 108px; flex-shrink: 0; }
-.gauge-side { flex: 1; min-width: 0; font-size: 11px; }
-.gauge-score { font-size: 22px; font-weight: 700; color: var(--accent); line-height: 1.1; }
-.gauge-note { color: var(--ink-2); font-size: 10.5px; }
-
-/* 代码面板（展示用） */
-.code-box {
-  font-family: "JetBrains Mono", Consolas, monospace;
-  font-size: 10.5px;
-  line-height: 1.65;
-  color: var(--ink-1);
-  background: rgba(0, 0, 0, .35);
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 8px 10px;
-  height: 100%;
-  overflow: hidden;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.code-box .c-key { color: var(--accent); }
-.code-box .c-str { color: var(--gold); }
-.code-box .c-cm { color: var(--ink-2); }
-.code-box .c-cur { background: color-mix(in srgb, var(--gold) 22%, transparent); color: var(--gold); border-radius: 2px; }
-
-/* 步骤条 */
-.step-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--ink-2); flex-wrap: wrap; }
-.step-chip { padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; }
-.step-chip.is-on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 22%, transparent); }
-.step-chip.is-done { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); }
-.step-arrow { color: var(--ink-2); }
-
-/* 词云热力 */
-.word-list { display: flex; flex-wrap: wrap; gap: 5px; align-content: flex-start; }
-.word-chip {
-  padding: 1px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  font-size: 10.5px;
-  color: var(--ink-1);
-}
-.word-chip.hot { color: var(--gold); border-color: color-mix(in srgb, var(--gold) 45%, transparent); }
-
-/* ---------- 调试台抽屉 ---------- */
 .drawer {
   position: fixed;
   top: 0; right: 0; bottom: 0;
@@ -639,6 +252,7 @@ body::before {
 
 .scope-name { font-size: 12px; color: var(--ink-0); word-break: break-all; }
 .scope-sub { font-size: 11px; color: var(--ink-2); margin-top: 2px; }
+.scope-raw { font-family: "JetBrains Mono", Consolas, monospace; font-size: 10px; opacity: .65; word-break: break-all; }
 .mood-bar { display: flex; gap: 6px; margin-top: 5px; font-size: 10.5px; color: var(--ink-1); flex-wrap: wrap; }
 .mood-bar .m { background: rgba(255, 255, 255, .05); border-radius: 3px; padding: 1px 7px; }
 

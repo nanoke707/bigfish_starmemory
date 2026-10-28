@@ -3,166 +3,332 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>咸鱼星空记忆 · 记忆观测台</title>
+  <title>咸鱼星空记忆 · 神经星环</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@800;900&family=Big+Shoulders+Stencil+Display:wght@900&family=JetBrains+Mono:wght@400;500;700;800&family=Michroma&family=Noto+Sans+SC:wght@400;500;700;900&family=Syncopate:wght@400;700&display=swap">
   <link rel="stylesheet" href="./style.css" />
 </head>
-<body data-theme="neural">
+<body>
 
-  <div id="app" class="app">
+  <!-- ================= 神经星环主题（Shadow DOM） ================= -->
+  <div class="th-host" id="host-neural"></div>
 
-    <!-- ================= 顶部 HUD ================= -->
-    <header class="hud-top">
-      <div class="hud-brand">
-        <span class="hud-logo" aria-hidden="true">✦</span>
-        <div class="hud-brand-text">
-          <h1 class="hud-title">咸鱼星空记忆<span class="hud-sub-en">STARMEMORY OBSERVATORY</span></h1>
-          <p class="hud-sub" id="theme-caption">神经星环 · 记忆拓扑实时观测</p>
-        </div>
+  <!-- 桥接状态 -->
+  <div class="shell-bar">
+    <span id="bridge-status" class="bridge-pill is-loading">桥接检测中</span>
+  </div>
+
+  <!-- 桥接告警 -->
+  <div id="bridge-warn" class="bridge-warn hidden">
+    ⚠️ 与 AstrBot 面板的桥接未就绪，数据面板无法刷新。<br />
+    请从 <b>AstrBot WebUI → 插件管理 → 咸鱼星空记忆 → 拓展页</b> 打开本页面（不要直接输入页面地址）。<br />
+    若仍失败：按 F12 打开浏览器控制台，把红色报错截图发给插件作者。
+  </div>
+
+  <!-- ================= 调试台抽屉 ================= -->
+  <aside id="drawer" class="drawer" aria-hidden="true">
+    <header class="drawer-head">
+      <div class="drawer-tabs" id="drawer-tabs">
+        <button class="drawer-tab is-active" data-dtab="stars">✦ 星空</button>
+        <button class="drawer-tab" data-dtab="search">🔍 检索调试</button>
+        <button class="drawer-tab" data-dtab="scopes">🪐 星域与凝星</button>
+        <button class="drawer-tab" data-dtab="settings">⚙️ 设置</button>
       </div>
-
-      <div class="hud-metrics" id="hud-metrics" aria-label="核心读数"></div>
-
-      <div class="hud-actions">
-        <span id="bridge-status" class="bridge-pill is-loading">桥接检测中</span>
-        <button id="btn-theme" class="hud-btn" title="切换主题（快捷键 T）">◐ 主题</button>
-        <button id="btn-console" class="hud-btn" title="打开调试台（快捷键 D）">⌨ 调试台</button>
-        <button id="btn-maintain" class="hud-btn" title="立即推进所有星域的遗忘维护">🌙 维护</button>
-        <button id="btn-refresh" class="hud-btn" title="重新拉取数据（快捷键 R）">↻</button>
-        <button id="btn-full" class="hud-btn" title="全屏（快捷键 F）">⛶</button>
-      </div>
+      <button id="drawer-close" class="drawer-close" title="关闭（Esc）">✕</button>
     </header>
 
-    <!-- 桥接告警 -->
-    <div id="bridge-warn" class="bridge-warn hidden">
-      ⚠️ 与 AstrBot 面板的桥接未就绪，数据面板无法刷新。<br />
-      请从 <b>AstrBot WebUI → 插件管理 → 咸鱼星空记忆 → 拓展页</b> 打开本页面（不要直接输入页面地址）。<br />
-      若仍失败：按 F12 打开浏览器控制台，把红色报错截图发给插件作者。
-    </div>
-
-    <!-- ================= 主体三栏 ================= -->
-    <main class="hud-main">
-
-      <!-- 左栏 -->
-      <aside class="hud-rail hud-rail-left" id="rail-left"></aside>
-
-      <!-- 中央舞台 -->
-      <section class="stage" id="stage-wrap">
-        <canvas id="stage" class="stage-canvas"></canvas>
-
-        <div class="stage-chrome">
-          <div class="stage-corner tl"></div>
-          <div class="stage-corner tr"></div>
-          <div class="stage-corner bl"></div>
-          <div class="stage-corner br"></div>
-        </div>
-
-        <div class="stage-head">
-          <div class="stage-head-left">
-            <span class="stage-kicker" id="stage-kicker">NEURAL RING</span>
-            <span class="stage-title" id="stage-title">神经星环</span>
+    <div class="drawer-body">
+      <!-- 星空列表 -->
+      <section class="dpane is-active" data-dpane="stars">
+        <div class="filterbar">
+          <div class="chips" id="status-chips">
+            <button class="chip is-active" data-status="all">全部</button>
+            <button class="chip" data-status="bright">明亮</button>
+            <button class="chip" data-status="faded">变暗</button>
+            <button class="chip" data-status="archived">熄灭</button>
+            <button class="chip" data-status="pinned">珍藏</button>
           </div>
-          <div class="stage-head-right">
-            <span class="stage-readout" id="stage-readout">—</span>
-          </div>
+          <span class="hint" id="last-maintained"></span>
         </div>
-
-        <div class="stage-legend" id="stage-legend"></div>
-
-        <div class="stage-status">
-          <span class="stage-dot" id="stage-dot"></span>
-          <span id="stage-status-text">正在建立星域拓扑…</span>
-        </div>
-
-        <!-- 3D 不可用时的降级画面 -->
-        <div id="stage-fallback" class="stage-fallback hidden">
-          <div class="fallback-inner">
-            <div class="fallback-title">3D 渲染不可用</div>
-            <p class="fallback-desc" id="fallback-desc">
-              无法加载 three.js（离线或 CDN 被拦截）。数据面板仍然完全可用。
-            </p>
-            <div id="fallback-stars" class="fallback-stars"></div>
-          </div>
+        <div id="star-list" class="star-list"><div class="empty">加载中……</div></div>
+        <div class="pager">
+          <button id="btn-prev" class="mini-btn">上一页</button>
+          <span id="page-indicator">第 1 页</span>
+          <button id="btn-next" class="mini-btn">下一页</button>
         </div>
       </section>
 
-      <!-- 右栏 -->
-      <aside class="hud-rail hud-rail-right" id="rail-right"></aside>
-    </main>
-
-    <!-- ================= 底部面板 ================= -->
-    <section class="hud-bottom" id="hud-bottom"></section>
-
-    <!-- ================= 调试台抽屉 ================= -->
-    <aside id="drawer" class="drawer" aria-hidden="true">
-      <header class="drawer-head">
-        <div class="drawer-tabs" id="drawer-tabs">
-          <button class="drawer-tab is-active" data-dtab="stars">✦ 星空</button>
-          <button class="drawer-tab" data-dtab="search">🔍 检索调试</button>
-          <button class="drawer-tab" data-dtab="scopes">🪐 星域与凝星</button>
-          <button class="drawer-tab" data-dtab="settings">⚙️ 设置</button>
+      <!-- 检索调试 -->
+      <section class="dpane" data-dpane="search">
+        <div class="searchbar">
+          <input id="search-input" type="text" placeholder="输入话题，看看哪些星星会被点亮（低阈值显示原始得分）" />
+          <button id="btn-search" class="mini-btn is-primary">检索</button>
         </div>
-        <button id="drawer-close" class="drawer-close" title="关闭（Esc）">✕</button>
-      </header>
+        <p class="hint">调试模式：阈值放宽到常规注入的 1/3，展示 <b>score × 可见度</b> 的原始结果与命中方式，不会巩固星星状态。</p>
+        <div id="search-results" class="star-list"></div>
+      </section>
 
-      <div class="drawer-body">
-        <!-- 星空列表 -->
-        <section class="dpane is-active" data-dpane="stars">
-          <div class="filterbar">
-            <div class="chips" id="status-chips">
-              <button class="chip is-active" data-status="all">全部</button>
-              <button class="chip" data-status="bright">明亮</button>
-              <button class="chip" data-status="faded">变暗</button>
-              <button class="chip" data-status="archived">熄灭</button>
-              <button class="chip" data-status="pinned">珍藏</button>
-            </div>
-            <span class="hint" id="last-maintained"></span>
-          </div>
-          <div id="star-list" class="star-list"><div class="empty">加载中……</div></div>
-          <div class="pager">
-            <button id="btn-prev" class="mini-btn">上一页</button>
-            <span id="page-indicator">第 1 页</span>
-            <button id="btn-next" class="mini-btn">下一页</button>
-          </div>
-        </section>
+      <!-- 星域与凝星 -->
+      <section class="dpane" data-dpane="scopes">
+        <p class="hint">每个会话是一段独立星域。点击「立即凝星」可以把缓冲中的对话马上提炼成星星（平时由 N 轮一凝自动完成）。</p>
+        <div id="scope-list" class="scope-list"></div>
+      </section>
 
-        <!-- 检索调试 -->
-        <section class="dpane" data-dpane="search">
-          <div class="searchbar">
-            <input id="search-input" type="text" placeholder="输入话题，看看哪些星星会被点亮（低阈值显示原始得分）" />
-            <button id="btn-search" class="mini-btn is-primary">检索</button>
-          </div>
-          <p class="hint">调试模式：阈值放宽到常规注入的 1/3，展示 <b>score × 可见度</b> 的原始结果与命中方式，不会巩固星星状态。</p>
-          <div id="search-results" class="star-list"></div>
-        </section>
-
-        <!-- 星域与凝星 -->
-        <section class="dpane" data-dpane="scopes">
-          <p class="hint">每个会话是一段独立星域。点击「立即凝星」可以把缓冲中的对话马上提炼成星星（平时由 N 轮一凝自动完成）。</p>
-          <div id="scope-list" class="scope-list"></div>
-        </section>
-
-        <!-- 设置 -->
-        <section class="dpane" data-dpane="settings">
-          <p class="hint">所有修改<b>立即保存并热生效</b>（无需重载插件）。提供商下拉列表来自 AstrBot 当前配置；留空表示使用 AstrBot 默认提供商。</p>
-          <div id="settings-loading" class="empty">加载配置中……</div>
-          <div id="settings-list"></div>
-        </section>
-      </div>
-    </aside>
-
-    <!-- ================= 星星详情弹层 ================= -->
-    <div id="modal" class="modal hidden">
-      <div class="modal-box">
-        <button id="modal-close" class="modal-close">✕</button>
-        <div id="modal-body"></div>
-      </div>
+      <!-- 设置 -->
+      <section class="dpane" data-dpane="settings">
+        <p class="hint">所有修改<b>立即保存并热生效</b>（无需重载插件）。提供商下拉列表来自 AstrBot 当前配置；留空表示使用 AstrBot 默认提供商。</p>
+        <div id="settings-loading" class="empty">加载配置中……</div>
+        <div id="settings-list"></div>
+      </section>
     </div>
+  </aside>
 
-    <div id="toast" class="toast hidden"></div>
+  <!-- ================= 星星详情弹层 ================= -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <button id="modal-close" class="modal-close">✕</button>
+      <div id="modal-body"></div>
+    </div>
   </div>
 
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- ================= 主题模板 ================= -->
+<template id="tpl-neural">
+<style>
+/* Layout: 全屏 WebGL 星环做底（每个智能体 = 一团神经元，按钟面围成一圈，CHIEF 在正中；任务交接 = 脉冲沿突触束跳转），
+   上面盖一块 1920×1080 的 HUD 画板按视口等比缩放：左上标题 + 左列 14 个神经团，右列 神经活动热力格 / 突触日志 / 巡检，底部指标条。
+   窄屏或竖屏只留星环和一条精简信息。单一深色视觉，刻意不做浅色版。 */
+:host{
+  color-scheme:dark;
+  --bg:#03050a; --ink:#e4eaf2; --ink2:#a9b4c3; --mute:#6b7685; --dim:#3c4552;
+  --hair:rgba(186,212,240,.14); --hair2:rgba(186,212,240,.30); --glass:rgba(4,7,13,.66);
+  --ice:#a6f1ff; --amber:#ffb547; --good:#3ce69a; --bad:#ff4d5e; --pink:#ff3f8e;
+  --display:"Michroma","Noto Sans SC",system-ui,sans-serif;
+  --mono:"JetBrains Mono","Noto Sans SC","PingFang SC",ui-monospace,Menlo,monospace;
+  --cjk:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+}
+:host{display:block;height:100%;position:relative;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--mono);-webkit-font-smoothing:antialiased}
+[hidden]{display:none!important}
+.gl{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab;touch-action:none}
+.gl.drag{cursor:grabbing}
+.gl.hov{cursor:pointer}
+.vig{position:absolute;inset:0;pointer-events:none;background:radial-gradient(120% 90% at 50% 47%,transparent 55%,rgba(1,2,5,.55) 85%,rgba(1,2,5,.85))}
+.fit{position:absolute;inset:0;box-sizing:border-box;padding-block:0;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));pointer-events:none}
+.fit-in{position:relative;width:100%;height:100%}
+.board{position:absolute;left:50%;top:50%;width:1920px;height:1080px;transform:translate(-50%,-50%) scale(var(--s,.5));pointer-events:none}
+.pe{pointer-events:auto}
+
+/* ---------- 标题 ---------- */
+.hd{position:absolute;left:24px;top:22px;width:560px;text-shadow:0 0 4px var(--bg),0 0 12px var(--bg)}
+.eb{font-size:10px;letter-spacing:.24em;color:var(--mute);white-space:nowrap}
+.eb b{color:var(--ice);font-weight:500}
+.hd h1{margin:12px 0 0;font-family:var(--display);font-weight:400;font-size:46px;line-height:1.02;letter-spacing:.06em;color:var(--ink)}
+.hd h1 span{display:block;white-space:nowrap}
+.hd h1 em{font-style:normal;font-family:var(--cjk);font-weight:900;font-size:30px;letter-spacing:.12em;margin-left:18px;vertical-align:4px;color:var(--ink2)}
+.sub{margin-top:14px;font-family:var(--cjk);font-size:13px;letter-spacing:.06em;color:var(--ink2);white-space:nowrap}
+.sub2{margin-top:6px;font-size:10px;letter-spacing:.16em;color:var(--mute);white-space:nowrap}
+.sub2 b{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
+
+/* ---------- 顶部中间：最近一次脉冲 ---------- */
+.cap{position:absolute;left:50%;top:24px;transform:translateX(-50%);width:600px;text-align:center;text-shadow:0 0 4px var(--bg),0 0 10px var(--bg),0 0 18px var(--bg)}
+.cap-l{font-size:9px;letter-spacing:.3em;color:var(--mute)}
+.cap-b{margin-top:7px;display:flex;justify-content:center;align-items:baseline;gap:12px;white-space:nowrap;overflow:hidden}
+.cap-b .ck{font-family:var(--display);font-size:15px;letter-spacing:.08em}
+.cap-b .cv{font-family:var(--cjk);font-size:13px;color:var(--ink2);border:1px solid var(--hair2);padding:1px 7px}
+.cap-b .ct{font-family:var(--cjk);font-size:14px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;max-width:400px}
+.cap.bad .cv{color:var(--bad);border-color:rgba(255,77,94,.6)}
+.cap.ship .cv{color:var(--good);border-color:rgba(60,230,154,.5)}
+.cap-line{margin:9px auto 0;width:420px;height:1px;background:linear-gradient(90deg,transparent,var(--hair2),transparent)}
+
+/* ---------- 工具条 ---------- */
+.tools{position:absolute;right:24px;top:22px;display:flex;gap:6px}
+.tb{font:500 11px/1 var(--mono);letter-spacing:.1em;color:var(--ink2);background:rgba(4,7,13,.55);border:1px solid var(--hair2);padding:8px 11px;cursor:pointer;white-space:nowrap}
+.tb b{color:var(--ink);font-weight:700;font-family:var(--cjk);margin-left:6px;letter-spacing:.04em}
+.tb:hover{border-color:var(--ice);color:var(--ink)}
+.tb[aria-pressed="true"]{border-color:var(--ice);color:var(--ice)}
+.tb:focus-visible{outline:1px solid var(--ice);outline-offset:2px}
+
+/* ---------- 左列：神经团 ---------- */
+.lt{position:absolute;left:24px;top:236px;bottom:140px;width:384px;display:flex;flex-direction:column}
+.sec-h{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding-bottom:8px;border-bottom:1px solid var(--hair2);margin-bottom:8px}
+.sec-h h2{margin:0;font-family:var(--display);font-weight:400;font-size:11px;letter-spacing:.16em;color:var(--ink);white-space:nowrap}
+.sec-h h2 i{font-style:normal;font-family:var(--cjk);font-size:11px;color:var(--mute);letter-spacing:.06em;margin-left:8px}
+.sec-h span{font-size:9.5px;color:var(--mute);letter-spacing:.08em;white-space:nowrap;font-variant-numeric:tabular-nums}
+.cls{flex:1;min-height:0;display:grid;grid-template-rows:repeat(14,minmax(0,1fr));gap:4px}
+.cl{--c:#fff;position:relative;display:grid;grid-template-columns:3px 76px minmax(0,1fr) 46px;grid-template-rows:16px 3px 13px;column-gap:9px;row-gap:3px;align-content:center;min-height:44px;box-sizing:border-box;padding:4px 10px 4px 0;background:linear-gradient(90deg,rgba(4,7,13,.72),rgba(4,7,13,.3));border:1px solid var(--hair);transition:border-color .3s,box-shadow .3s}
+.cl .sw{grid-row:1 / 4;background:var(--c);opacity:.35;transition:opacity .3s}
+.cl .k{font:800 12.5px/16px var(--mono);letter-spacing:.06em;color:var(--c);white-space:nowrap}
+.cl .z{font:500 11.5px/16px var(--cjk);color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cl .pc{font:700 12px/16px var(--mono);text-align:right;color:var(--ink);font-variant-numeric:tabular-nums}
+.cl .bar{grid-column:2 / 5;background:rgba(186,212,240,.1);position:relative;overflow:hidden}
+.cl .bar i{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--c);box-shadow:0 0 8px var(--c);transition:width .25s linear}
+.cl .st{grid-column:2 / 5;font:400 10px/13px var(--cjk);color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cl.work .sw{opacity:1}
+.cl.work .st{color:var(--ink2)}
+.cl.idle .k{opacity:.6}
+.cl.idle .pc{color:var(--dim)}
+.cl.hit{border-color:var(--c);box-shadow:0 0 0 1px var(--c),0 0 18px -4px var(--c)}
+.cl.foc{border-color:var(--ice)}
+.conn{position:absolute;left:386px;top:0;width:60px;height:100%;overflow:visible;pointer-events:none}
+.conn path{fill:none;stroke-width:1.5;stroke-dasharray:3 5;animation:dash 1s linear infinite;transition:opacity .6s}
+@keyframes dash{to{stroke-dashoffset:-16}}
+
+/* ---------- 右列 ---------- */
+.rc{position:absolute;right:24px;top:84px;bottom:136px;width:388px;display:flex;flex-direction:column;gap:12px}
+.pnl{position:relative;box-sizing:border-box;padding:12px 14px 12px;background:linear-gradient(180deg,rgba(4,7,13,.76),rgba(4,7,13,.42));border:1px solid var(--hair)}
+.pnl::before,.pnl::after{content:"";position:absolute;width:10px;height:10px;border-color:var(--hair2);border-style:solid;pointer-events:none}
+.pnl::before{left:-1px;top:-1px;border-width:1px 0 0 1px}
+.pnl::after{right:-1px;bottom:-1px;border-width:0 1px 1px 0}
+.p-heat{flex:none;height:300px}
+.p-feed{flex:1;min-height:0;display:flex;flex-direction:column}
+.p-crawl{flex:none;height:104px}
+.heat{position:relative;height:238px}
+.heat canvas{position:absolute;inset:0;width:100%;height:100%}
+.feed{list-style:none;margin:0;padding:0;flex:1;min-height:0;overflow:hidden;font-size:10.5px;line-height:15px}
+.feed li{display:grid;grid-template-columns:56px 62px 32px minmax(0,1fr);gap:8px;white-space:nowrap}
+.feed time{color:var(--dim);font-variant-numeric:tabular-nums}
+.feed b{font-weight:800;letter-spacing:.04em}
+.feed em{font-style:normal;font-family:var(--cjk);color:var(--ink2)}
+.feed span{overflow:hidden;text-overflow:ellipsis;font-family:var(--cjk);color:var(--ink2)}
+.feed li.bad em,.feed li.bad span{color:var(--bad)}
+.feed li.ship em{color:var(--good)}
+.feed li:first-child{background:linear-gradient(90deg,rgba(166,241,255,.08),transparent)}
+.cw{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.cw div{display:grid;gap:3px;min-width:0}
+.cw span{font-size:8.5px;letter-spacing:.14em;color:var(--mute);white-space:nowrap}
+.cw b{font-size:17px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cw b.cy{color:#45e6f5}
+.cw b.rd{color:var(--bad)}
+.cw-now{margin-top:8px;font-family:var(--cjk);font-size:10.5px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cw-now b{font-family:var(--mono);color:#45e6f5;font-weight:700;margin-right:6px}
+
+/* ---------- 底部指标条 ---------- */
+.bs{position:absolute;left:24px;right:24px;bottom:20px;height:92px;display:grid;grid-template-columns:1.05fr 1.5fr 1.45fr 1fr 1.15fr 1fr;border-top:1px solid var(--hair2);background:linear-gradient(0deg,rgba(3,5,10,.86),rgba(3,5,10,.4))}
+.bc{position:relative;min-width:0;padding:12px 16px 8px;border-left:1px solid var(--hair);display:grid;grid-template-rows:12px 30px 14px;row-gap:5px}
+.bc:first-child{border-left:0;padding-left:0}
+.bc .l{font-size:9px;letter-spacing:.2em;color:var(--mute);white-space:nowrap}
+.bc .l i{font-style:normal;font-family:var(--cjk);letter-spacing:.06em;margin-left:6px}
+.bc .v{font-size:27px;line-height:30px;font-weight:500;font-variant-numeric:tabular-nums;white-space:nowrap;letter-spacing:.01em}
+.bc .v small{font-size:12px;color:var(--mute);margin-left:6px;font-family:var(--cjk)}
+.bc .s{font-size:9.5px;line-height:14px;color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--cjk)}
+.bc .s b{color:var(--ink2);font-weight:500;font-family:var(--mono)}
+.spark{position:absolute;right:16px;top:14px;width:190px;height:52px}
+.prog{position:absolute;left:16px;right:16px;bottom:30px;height:3px;background:rgba(186,212,240,.1)}
+.prog i{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--ice);box-shadow:0 0 10px var(--ice)}
+.bc.big .v{color:#fff;text-shadow:0 0 18px rgba(166,241,255,.35)}
+
+.wm{position:absolute;left:440px;bottom:126px;font-family:var(--display);font-size:9px;letter-spacing:.32em;color:var(--dim);white-space:nowrap}
+
+/* ---------- 悬停提示 ---------- */
+.tip{position:absolute;z-index:5;pointer-events:none;min-width:200px;max-width:280px;background:rgba(4,7,13,.92);border:1px solid var(--hair2);border-left:2px solid var(--c,#fff);padding:8px 11px;font-size:11px;line-height:1.6;font-family:var(--cjk);color:var(--ink2)}
+.tip b{font-family:var(--mono);font-weight:800;color:var(--c,#fff);margin-right:8px;letter-spacing:.04em}
+.tip strong{color:var(--ink);font-weight:500}
+.tip span{display:block}
+.tip .h{color:var(--mute);font-size:10px;margin-top:3px}
+
+/* ---------- 窄屏 / 竖屏 ---------- */
+.mini{display:none;position:absolute;inset:0;flex-direction:column;justify-content:space-between;pointer-events:none}
+.narrow .board{display:none}
+.narrow .mini{display:flex}
+.m-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.m-title{font-family:var(--display);font-size:16px;letter-spacing:.08em;line-height:1.3}
+.m-title i{display:block;font-style:normal;font-family:var(--cjk);font-weight:700;font-size:12px;color:var(--ink2);letter-spacing:.12em}
+.m-btns{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px;max-width:210px}
+.m-btns .tb{padding:6px 8px;font-size:10px}
+.m-cap{font-family:var(--cjk);font-size:12px;color:var(--ink2);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-cap b{font-family:var(--mono);margin-right:6px}
+.m-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;border-top:1px solid var(--hair2);padding-top:8px}
+.m-stats div{display:grid;gap:2px;min-width:0}
+.m-stats span{font-size:9px;letter-spacing:.12em;color:var(--mute);white-space:nowrap}
+.m-stats b{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.m-wm{margin-top:6px;font-family:var(--display);font-size:8px;letter-spacing:.3em;color:var(--dim);text-align:center}
+.glfail{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);max-width:340px;text-align:center;font-family:var(--cjk);font-size:13px;line-height:1.7;color:var(--ink2);border:1px solid var(--hair2);padding:14px 18px;background:rgba(4,7,13,.85)}
+@media (prefers-reduced-motion:reduce){.conn path{animation:none}.cl .bar i{transition:none}}
+</style>
+
+<canvas class="gl" id="gl" aria-label="神经星环：11 个星域的神经元，脉冲沿突触束在它们之间传递记忆。拖动可转动视角，点击星域可聚焦"></canvas>
+<div class="vig" aria-hidden="true"></div>
+<div class="nr" id="nr">
+<div class="fit"><div class="fit-in" id="fitIn">
+ <div class="board" id="board">
+  <header class="hd">
+   <div class="eb">咸鱼星空记忆 · THEME <b>03</b> · SYNAPTIC DISPATCH</div>
+   <h1><span>NEURAL</span><span>RING<em>神经星环</em></span></h1>
+   <div class="sub">CORE 记忆中枢 · 11 个星域接力 · FADE 遗忘站 · MAINT 维护</div>
+   <div class="sub2">真实实例 · 记忆就是星 · <b id="clock">--:--:--</b></div>
+  </header>
+
+  <div class="cap" id="cap">
+   <div class="cap-l">LAST RECALL · 最近一次想起</div>
+   <div class="cap-b"><span class="ck" id="capK">CHIEF</span><span class="cv" id="capV">想起</span><span class="ct" id="capT">—</span></div>
+   <div class="cap-line"></div>
+  </div>
+
+  <div class="tools pe">
+   <button class="tb" type="button" data-act="mode">视角<b data-f="mode">环绕</b></button>
+   <button class="tb" type="button" data-series-pick>调试台</button>
+   <button class="tb" type="button" data-act="full" data-f="full">全屏</button>
+  </div>
+
+  <section class="lt">
+   <div class="sec-h"><h2>SCOPE CLUSTERS<i>星域</i></h2><span id="ltMeta">— clusters</span></div>
+   <div class="cls" id="cls"></div>
+   <svg class="conn" id="conn" aria-hidden="true"><path id="connP" d="" opacity="0"/></svg>
+  </section>
+
+  <div class="rc">
+  <article class="pnl p-heat">
+   <div class="sec-h"><h2>RECALL ACTIVITY<i>召回热力</i></h2><span>近 30s · 每格 2.5s</span></div>
+   <div class="heat"><canvas id="heat" aria-label="每个星域最近 30 秒的召回强度热力格"></canvas></div>
+  </article>
+  <article class="pnl p-feed">
+   <div class="sec-h"><h2>RECALL FEED<i>召回日志</i></h2><span id="feedMeta">0 in flight</span></div>
+   <ol class="feed" id="feed"></ol>
+  </article>
+  <article class="pnl p-crawl">
+   <div class="sec-h"><h2>MAINTENANCE<i>每日维护</i></h2><span>半衰期扫描</span></div>
+   <div class="cw"><div><span>维护</span><b class="cy" id="cwP">0</b></div><div><span>扫描</span><b id="cwR">0</b></div><div><span>变暗</span><b class="rd" id="cwB">0</b></div><div><span>归档</span><b id="cwF">0</b></div></div>
+   <div class="cw-now" id="cwNow">—</div>
+  </article>
+  </div>
+
+  <section class="bs">
+   <div class="bc"><span class="l">MEMORY<i>记忆</i></span><span class="v" id="bTopo">0<small>突触</small></span><span class="s" id="bTopoS">—</span></div>
+   <div class="bc"><span class="l">RECALL RATE<i>召回</i></span><span class="v" id="bRate">0<small>次/秒</small></span><span class="s" id="bRateS">—</span><canvas class="spark" id="spark" aria-label="最近 60 秒每秒召回数"></canvas></div>
+   <div class="bc big"><span class="l">NEW TODAY<i>今日新星</i></span><span class="v" id="bOut">0</span><span class="s" id="bOutS">—</span><span class="prog"><i id="bOutBar"></i></span></div>
+   <div class="bc"><span class="l">RETENTION<i>保持率</i></span><span class="v" id="bPass">—</span><span class="s" id="bPassS">—</span></div>
+   <div class="bc"><span class="l">EMOTION<i>情绪残留</i></span><span class="v" id="bTok">0</span><span class="s" id="bTokS">—</span></div>
+   <div class="bc"><span class="l">RENDER<i>渲染</i></span><span class="v" id="bFps">—</span><span class="s" id="bFpsS">—</span></div>
+  </section>
+
+  <div class="wm">DEVELOPED BY @赛博老爸 · 咸鱼星空记忆适配</div>
+ </div>
+
+ <div class="mini" id="mini">
+  <div class="m-top">
+   <div class="m-title">NEURAL RING<i>神经星环 · 记忆就是星</i></div>
+   <div class="m-btns pe">
+    <button class="tb" type="button" data-act="mode">视角<b data-f="mode">环绕</b></button>
+    <button class="tb" type="button" data-series-pick>调试台</button>
+   </div>
+  </div>
+  <div>
+   <div class="m-cap" id="mCap">—</div>
+   <div class="m-stats"><div><span>今日新星</span><b id="mOut">0</b></div><div><span>在跑星域</span><b id="mLive">0</b></div><div><span>情绪残留</span><b id="mTok">0</b></div></div>
+   <div class="m-wm">DEVELOPED BY @赛博老爸 · 咸鱼星空记忆适配</div>
+  </div>
+ </div>
+</div></div>
+</div>
+<div class="tip" id="tip" hidden></div>
+<div class="glfail" id="glFail" hidden>这台设备的浏览器没法显示 3D 画面（WebGL 不可用），右侧数据照常在跑。换 Chrome / Edge 打开即可看到星环。</div>
+</template>
+
   <script src="/api/plugin/page/bridge-sdk.js"></script>
-  <script src="./scenes.js"></script>
+  <script>window.__errs=[];window.addEventListener("error",function(e){window.__errs.push(String(e.message)+" @"+String(e.filename||"").split("/").pop()+":"+e.lineno)});window.addEventListener("unhandledrejection",function(e){window.__errs.push("unhandled: "+String(e.reason&&e.reason.message||e.reason))});</script>
+  <script src="./neural.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
