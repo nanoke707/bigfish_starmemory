@@ -274,55 +274,16 @@ def format_event_time(
 ) -> str:
     """把事件时间渲染成人话（供 WebUI 与注入文本使用）。
 
-    **必须按真实年龄渲染**：精度只表示"这个时间有多确定"，不表示"它有多旧"。
-    早先这里把 approximate 档一律写成"大约一个月前"，于是今天写下的记忆
-    （迁移回填时精度是 approximate）全被标成一个月前——那是显示的 bug，
-    不是数据的问题。
+    **一律显示绝对时间** ``YYYY-MM-DD HH:MM``。
+
+    精度只表示"这个时间有多确定"，不表示"它有多旧"——两者都不该影响显示成什么。
+    相对说法（"今天""大约一个月前"）让人没法自己核对，也正是把今天写成
+    "一个月前"的那类 bug 的温床。所以显示一律用绝对时间；"多久以前"由
+    ``days_since_anchor`` 这类字段去说。
+
+    - 没有时间戳时返回"时间不详"；
+    - 未来的时间同样显示绝对时间（它就是将来要发生的事）。
     """
     if not ts:
         return "时间不详"
-    now = time.time() if now is None else now
-    dt = datetime.fromtimestamp(ts)
-    if precision == PRECISION_EXACT:
-        return dt.strftime("%Y-%m-%d %H:%M")
-
-    # 按自然日算年龄：昨天的事就是"1 天前"，不随时刻漂移
-    days = int((_start_of_day(datetime.fromtimestamp(now)) - _start_of_day(dt)).days)
-
-    if days < 0:
-        # 还没发生的事（"下周的考试"）：按将来表述，不能说成"今天"
-        ahead = -days
-        if ahead == 1:
-            return "明天"
-        if ahead <= 30:
-            return f"{ahead} 天后"
-        if ahead <= 365:
-            return f"{round(ahead / 30)} 个月后"
-        return f"{ahead // 365} 年后"
-
-    if precision == PRECISION_DAY:
-        if days == 0:
-            return "今天"
-        if days == 1:
-            return "昨天"
-        if days <= 30:
-            return f"{days} 天前"
-        if days <= 365:
-            return dt.strftime("%Y-%m-%d")
-        return f"{days // 365} 年前"
-
-    if precision == PRECISION_APPROX:
-        # 近似时间：说出真实年龄，但保留"大约"的不确定性
-        if days == 0:
-            return "今天"
-        if days == 1:
-            return "昨天"
-        if days <= 30:
-            return f"大约 {days} 天前"
-        if days <= 60:
-            return "大约一个月前"
-        if days <= 365:
-            return f"大约 {round(days / 30)} 个月前"
-        return f"大约 {days // 365} 年前"
-
-    return dt.strftime("%Y-%m-%d")
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")

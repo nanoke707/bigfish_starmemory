@@ -173,6 +173,14 @@ faint   R >  0       几乎不记得，可提"好像有过"
 unknown            无法可靠回忆 —— 不注入
 ```
 
+**事件时间**
+
+```
+存储    event_time + event_time_precision(exact/day/approximate/unknown) + event_time_source
+解析    LLM 给绝对时间 "YYYY-MM-DD HH:MM"；相对说法按**对话发生的时间**换算
+显示    一律 "YYYY-MM-DD HH:MM"（精度只说明确定度，不影响显示成什么）
+```
+
 **召回综合分**
 
 ```

@@ -711,7 +711,10 @@ class TestGConversationIntegration:
             assert "生气" in block          # 情绪残留进入上下文
             assert "此刻心绪" in block      # bot 当前心绪
             # 记忆清晰度与情绪强度是两条独立的信息
-            assert "20 天前" in block or "天前" in block
+            # 事件时间一律用绝对时间显示（不出现"20 天前"这类相对说法）
+            stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(now - 20 * DAY))
+            assert stamp in block
+            assert "天前" not in block
         finally:
             asyncio.run(engine.store.close())
             cleanup_dir(tmp)

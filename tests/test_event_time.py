@@ -2,8 +2,9 @@
 
 覆盖三件事：
 
-1. **标签必须按真实年龄渲染**——精度只表示"多确定"，不表示"多旧"。
-   （回归：approximate 档曾把 1 天前的事写成"大约一个月前"。）
+1. **显示一律用绝对时间**——``YYYY-MM-DD HH:MM``，任何精度、任何年龄都不出现
+   相对说法。（回归：曾把 1 天前的事写成"大约一个月前"，也曾把今天写成"今天"，
+   让用户没法自己核对。）
 2. **绝对时间解析要稳**——"YYYY-MM-DD HH:MM" 及各种中文/ISO 变体，
    且不受锚点影响。
 3. **相对说法要锚定到对话时间**——三天前的对话里的"昨天"是四天前。
@@ -33,28 +34,45 @@ def _ts(days_ago: float = 0.0, *, hour: int = 12, minute: int = 0) -> float:
 
 
 class TestFormatEventTime:
-    def test_approximate_recent_is_not_a_month_ago(self):
-        """回归：一天前 / 今天的 approximate 时间不能被写成"大约一个月前"。"""
-        now = time.time()
-        assert timeline.format_event_time(_ts(0), "approximate", now) == "今天"
-        assert timeline.format_event_time(_ts(1), "approximate", now) == "昨天"
-        assert timeline.format_event_time(_ts(3), "approximate", now) == "大约 3 天前"
+    """显示一律用绝对时间 ``YYYY-MM-DD HH:MM``。
 
-    def test_approximate_scales_with_real_age(self):
-        now = time.time()
-        assert timeline.format_event_time(_ts(40), "approximate", now) == "大约一个月前"
-        assert timeline.format_event_time(_ts(100), "approximate", now) == "大约 3 个月前"
-        assert timeline.format_event_time(_ts(400), "approximate", now) == "大约 1 年前"
+    相对说法（"今天""大约一个月前"）会让人没法自己核对，也没法判断算法对不对，
+    所以显示层不再出现任何相对词。
+    """
 
-    def test_day_precision(self):
+    _RELATIVE_WORDS = ("今天", "昨天", "前天", "明天", "天后", "天前", "个月前",
+                       "年前", "大约", "刚才", "最近")
+
+    def _assert_absolute(self, ts, precision="exact", now=None):
+        label = timeline.format_event_time(ts, precision, now)
+        assert label == time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)), label
+        return label
+
+    def test_all_precisions_show_absolute_datetime(self):
         now = time.time()
-        assert timeline.format_event_time(_ts(0), "day", now) == "今天"
-        assert timeline.format_event_time(_ts(1), "day", now) == "昨天"
-        assert timeline.format_event_time(_ts(5), "day", now) == "5 天前"
-        # 超过 30 天给出具体日期
-        assert timeline.format_event_time(_ts(60), "day", now) == time.strftime(
-            "%Y-%m-%d", time.localtime(_ts(60))
-        )
+        for precision in ("exact", "day", "approximate", "unknown"):
+            self._assert_absolute(_ts(0), precision, now)
+            self._assert_absolute(_ts(3), precision, now)
+            self._assert_absolute(_ts(400), precision, now)
+
+    def test_never_contains_relative_words(self):
+        """回归：显示里不允许出现相对说法（曾把今天写成'大约一个月前'）。"""
+        now = time.time()
+        for precision in ("exact", "day", "approximate"):
+            for days in (0, 1, 3, 30, 40, 100, 400, -1, -10, -400):
+                label = timeline.format_event_time(_ts(days), precision, now)
+                for word in self._RELATIVE_WORDS:
+                    assert word not in label, f"{label} 含有相对说法 {word}"
+
+    def test_label_is_independent_of_precision_and_now(self):
+        """同一个时间戳，显示必须一致——精度只表示确定度，不影响显示。"""
+        ts = _ts(0, hour=15, minute=47)
+        labels = {
+            timeline.format_event_time(ts, p, n)
+            for p in ("exact", "day", "approximate")
+            for n in (time.time(), time.time() + 10 * DAY, time.time() - 10 * DAY)
+        }
+        assert len(labels) == 1, labels
 
     def test_exact_precision_shows_full_timestamp(self):
         now = time.time()
@@ -67,13 +85,11 @@ class TestFormatEventTime:
         assert timeline.format_event_time(None, "unknown") == "时间不详"
         assert timeline.format_event_time(0, "unknown") == "时间不详"
 
-    def test_future_timestamp_does_not_go_negative(self):
-        """未来时间不能渲染成负天数，要说成"将来"。"""
+    def test_future_timestamp_shows_absolute_date(self):
+        """未来时间同样显示绝对时间（它就是将来要发生的事）。"""
         now = time.time()
-        assert timeline.format_event_time(now + 1 * DAY, "day", now) == "明天"
-        assert timeline.format_event_time(now + 10 * DAY, "day", now) == "10 天后"
-        assert timeline.format_event_time(now + 90 * DAY, "day", now) == "3 个月后"
-        assert timeline.format_event_time(now + 400 * DAY, "day", now) == "1 年后"
+        for days in (1, 10, 90, 400):
+            self._assert_absolute(now + days * DAY, "day", now)
 
     def test_exact_future_shows_absolute_date(self):
         now = time.time()
