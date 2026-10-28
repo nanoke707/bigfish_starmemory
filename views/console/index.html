@@ -334,16 +334,16 @@
     <div class="cls" id="cls"></div>
    </div>
 
-   <article class="pnl p-heat">
-    <div class="sec-h"><h2>RECALL ACTIVITY<i>召回热力</i></h2><span>近 30s · 每格 2.5s</span></div>
-    <div class="heat"><canvas id="heat" aria-label="每个星域最近 30 秒的召回强度热力格"></canvas></div>
-   </article>
   </section>
 
   <div class="rc">
   <article class="pnl p-mem">
    <div class="sec-h"><h2>MEMORY<i>记忆详情</i></h2><span id="memState">悬停截停</span></div>
    <div class="mem" id="mem"></div>
+  </article>
+  <article class="pnl p-heat">
+   <div class="sec-h"><h2>RECALL ACTIVITY<i>召回热力</i></h2><span>近 30s · 每格 2.5s</span></div>
+   <div class="heat"><canvas id="heat" aria-label="每个星域最近 30 秒的召回强度热力格"></canvas></div>
   </article>
   <article class="pnl p-feed">
    <div class="sec-h"><h2>RECALL FEED<i>召回日志</i></h2><span id="feedMeta">0 in flight</span></div>
@@ -384,7 +384,7 @@
 </template>
 
   <script src="/api/plugin/page/bridge-sdk.js"></script>
-  <script>window.__errs=[];window.addEventListener("error",function(e){window.__errs.push(String(e.message)+" @"+String(e.filename||"").split("/").pop()+":"+e.lineno)});window.addEventListener("unhandledrejection",function(e){window.__errs.push("unhandled: "+String(e.reason&&e.reason.message||e.reason))});</script>
+  <script>window.__errs=[];window.addEventListener("error",function(e){window.__errs.push(String(e.message)+" @"+String(e.filename||"").split("/").pop()+":"+e.lineno)});window.addEventListener("unhandledrejection",function(e){window.__errs.push("unhandled: "+String(e.reason&&e.reason.message||e.reason))});(function(){var ce=console.error;console.error=function(){try{window.__errs.push("console.error: "+Array.prototype.map.call(arguments,function(a){return (a&&a.stack)?String(a.stack).split("\n").slice(0,3).join(" | "):String(a)}).join(" "));}catch(_){}return ce.apply(console,arguments);};})();</script>
   <script src="./neural.js"></script>
   <script src="./app.js"></script>
 </body>

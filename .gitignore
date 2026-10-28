@@ -32,3 +32,8 @@ Thumbs.db
 # 本地开发沙盒（mock 桥接 / 离线依赖副本，不进公开仓库）
 dev/*.local.*
 dev/vendor.local/
+
+# 本地开发用的一次性脚本与参考副本（不进公开仓库）
+dev/_neural_ref.js
+dev/patch_*.py
+dev/*.png
