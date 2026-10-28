@@ -79,7 +79,7 @@ AG[13] = {k: 'MAINT', zh: '维护', role: '半衰期扫描 · 变暗归档', tag
 const PROOF = 12, CRAWLER = 13, NCL = 13;               // 0 中枢 / 1..11 星域 / 12 遗忘站 / 13 维护探针
 /* ===== 3D 场景层：0 = 恒星(bot 本体)，1..M = 一条条记忆，M+1 = 黑洞 ===== */
 const MAXMEM = 22;                                   // 屏幕上同时存在的记忆星（记忆慢慢攒，不用多）
-const HOLE = {x: -.74, y: -.31, z: .26, r: .135};      // 黑洞停在恒星左前方不远处
+const HOLE = {x: -1.36, y: -.78, z: .18, r: .165};      // 黑洞停在恒星左前方不远处
 const AFG = 80;                                      // 着色器里 af[] 的组数上限
 const SC = {n: 1, mem: [], col: [], pull: new Float32Array(AFG), bunBase: 2, held: -1, absorbed: 0, gone: []};
 let GBG = 1;                                         // 背景灰质所在的组号
@@ -360,14 +360,19 @@ let SPRITE = null;
 
 const BRAIN_VS_L = `
 attribute vec3 col; attribute float grp; attribute float shade;
-attribute vec3 gc; attribute float pull;
+attribute vec3 gc; attribute float pull; attribute float osp;
 uniform vec2 af[80]; uniform float uMono; uniform float uFade; uniform float uGain; uniform vec3 uHole;
+uniform float uOrbit;
 varying vec3 vCol; varying float vA;
 void main(){
   // 记忆越暗 = 被黑洞吸得越近：先向自己的中心收拢，再被拖向视界
   vec3 p = position;
   p = mix(p, gc, pull * .5);
   p = mix(p, uHole, pull * pull * .95);
+  // 绕着 bot 的星云公转：被吸得越狠，转得越慢（最后停住，直接坠向视界）
+  float ang = uOrbit * osp * (1.0 - pull);
+  float ca = cos(ang), sa = sin(ang);
+  p = vec3(p.x * ca - p.y * sa, p.x * sa + p.y * ca, p.z);
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   vec2 q = af[int(grp + 0.5)];
   float a = clamp(q.x, 0.0, 1.5);
@@ -384,14 +389,18 @@ varying vec3 vCol; varying float vA;
 void main(){ gl_FragColor = vec4(vCol, vA); }`;
 const BRAIN_VS_P = `
 attribute vec3 col; attribute float grp; attribute float sz; attribute float ph;
-attribute vec3 gc; attribute float pull;
+attribute vec3 gc; attribute float pull; attribute float osp;
 uniform vec2 af[80]; uniform float uMono; uniform float uTime; uniform float uPx; uniform float uFade; uniform float uGain;
-uniform vec3 uHole; uniform float uHold; uniform float uHoldT;
+uniform vec3 uHole; uniform float uHold; uniform float uHoldT; uniform float uOrbit;
 varying vec3 vCol; varying float vA;
 void main(){
   vec3 p = position;
   p = mix(p, gc, pull * .5);
   p = mix(p, uHole, pull * pull * .95);
+  // 绕着 bot 的星云公转
+  float ang = uOrbit * osp * (1.0 - pull);
+  float ca = cos(ang), sa = sin(ang);
+  p = vec3(p.x * ca - p.y * sa, p.x * sa + p.y * ca, p.z);
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   vec2 q = af[int(grp + 0.5)];
   float a = clamp(q.x, 0.0, 1.5);
@@ -436,6 +445,7 @@ void main(){ gl_FragColor = vec4(0.72, 0.84, 1.0, vA * 0.42); }`;
 function randUnit(){ let x, y, z, d; do { x = R() * 2 - 1; y = R() * 2 - 1; z = R() * 2 - 1; d = x * x + y * y + z * z; } while (d > 1 || d < .01); d = Math.sqrt(d); return new THREE.Vector3(x / d, y / d, z / d); }
 
 function disposeBrain(){
+  if (SC.memSpr) { SC.memSpr.forEach(s => { if (!s) return; spin.remove(s); s.material.dispose(); }); SC.memSpr = []; }
   if (SC.lines) { spin.remove(SC.lines); SC.lines.geometry.dispose(); SC.lines.material.dispose(); SC.lines = null; }
   if (SC.pts) { spin.remove(SC.pts); SC.pts.geometry.dispose(); SC.pts.material.dispose(); SC.pts = null; }
   if (SC.sigP) { spin.remove(SC.sigP); SC.sigP.geometry.dispose(); SC.sigP.material.dispose(); SC.sigP = null; }
@@ -476,21 +486,13 @@ function buildBrain(){
   for (let k = 0; k < 5; k++) addN(rg() * .02, rg() * .02, rg() * .02, 0, 0, .085);
   for (let k = 0; k < 230; k++) addN(rg() * .065, rg() * .065, rg() * .065, 0, 0, .015 + R() * .012);
   for (let k = 0; k < 300; k++) { const d = randUnit(), u = .1 + Math.pow(R(), .55) * .16; addN(d.x * u, d.y * u, d.z * u, 0, 0, .008 + R() * .009); }
-  /* 记忆星：每条记忆 = 一小团星尘 + 几根枝桠 */
+  /* 记忆 = 一颗星：核心 + 一点点光晕，主要形象交给带星芒的 sprite */
+  SC.osp = new Float32Array(AFG);
   for (let c = 1; c < SC.n; c++) {
-    const C = CL[c], sig = .048;
-    for (let k = 0; k < 3; k++) addN(C.x + rg() * .011, C.y + rg() * .011, C.z + rg() * .011, c, c, .056);
-    const core = 30;
-    for (let k = 0; k < core; k++) addN(C.x + rg() * sig, C.y + rg() * sig, C.z + rg() * sig * .9, c, c, .013 + R() * .011);
-    const nd = 6, per = 7;
-    for (let d = 0; d < nd; d++) {
-      const dir = randUnit(), len = .11 + R() * .16;
-      const perp = randUnit().cross(dir).normalize(), bend = (R() - .5) * .11;
-      for (let k = 0; k < per; k++) {
-        const u = Math.pow(R(), .8), off = Math.sin(u * Math.PI) * bend, j = .009 + .017 * u;
-        addN(C.x + dir.x * len * u + perp.x * off + rg() * j, C.y + dir.y * len * u + perp.y * off + rg() * j, C.z + dir.z * len * u + perp.z * off + rg() * j, c, c, .011 + R() * .009);
-      }
-    }
+    const C = CL[c], rr = Math.hypot(C.x, C.y);
+    SC.osp[c] = .34 / (rr + .55);            // 差速自转：靠里转得快，靠外转得慢
+    addN(C.x, C.y, C.z, c, c, .052);
+    for (let k = 0; k < 7; k++) addN(C.x + rg() * .016, C.y + rg() * .016, C.z + rg() * .016, c, c, .012 + R() * .009);
   }
   /* 背景灰质：铺满整个球，让星云连成一片 */
   for (let k = 0; k < 4200; k++) {
@@ -508,10 +510,11 @@ function buildBrain(){
   /* 局部连接：空间网格找最近邻 */
   const CELL = .16, grid = new Map(), key = (a, b, c) => a + ',' + b + ',' + c;
   for (let i = 0; i < N; i++) { const k = key(Math.floor(px[i] / CELL), Math.floor(py[i] / CELL), Math.floor(pz[i] / CELL)); let arr = grid.get(k); if (!arr) grid.set(k, arr = []); arr.push(i); }
-  const seen = new Set(), LP = [], LC = [], LG = [], LS = [], LPG = [], LGC = [];
-  function seg(x1, y1, z1, x2, y2, z2, c1, c2, g, s, pg0, pg1){
+  const seen = new Set(), LP = [], LC = [], LG = [], LS = [], LPG = [], LGC = [], LOSP = [];
+  function seg(x1, y1, z1, x2, y2, z2, c1, c2, g, s, pg0, pg1, o0, o1){
     LP.push(x1, y1, z1, x2, y2, z2); LC.push(c1[0], c1[1], c1[2], c2[0], c2[1], c2[2]);
     LG.push(g, g); LS.push(s, s); LPG.push(pg0, pg1);
+    LOSP.push(o0 || 0, o1 || 0);
     const a = CL[pg0] || CL[0], b = CL[pg1] || CL[0];
     LGC.push(a.x, a.y, a.z, b.x, b.y, b.z);
   }
@@ -551,13 +554,14 @@ function buildBrain(){
       const cpt = new V(mid.x / m * push, mid.y / m * push, mid.z + (R() - .5) * .2);
       strands.push({p0, c: cpt, p1, len: p0.distanceTo(cpt) + cpt.distanceTo(p1)});
       const ca = SC.col[0] || [1, 1, 1], cb = SC.col[c] || [1, 1, 1], SEG = 14;
+      const osp = SC.osp[c] || 0;
       let lx = p0.x, ly = p0.y, lz = p0.z;
       for (let k = 1; k <= SEG; k++) {
         const u = k / SEG, v = 1 - u;
         const x = v * v * p0.x + 2 * v * u * cpt.x + u * u * p1.x, y = v * v * p0.y + 2 * v * u * cpt.y + u * u * p1.y, z = v * v * p0.z + 2 * v * u * cpt.z + u * u * p1.z;
         const u0 = (k - 1) / SEG;
         seg(lx, ly, lz, x, y, z, [ca[0] + (cb[0] - ca[0]) * u0, ca[1] + (cb[1] - ca[1]) * u0, ca[2] + (cb[2] - ca[2]) * u0],
-            [ca[0] + (cb[0] - ca[0]) * u, ca[1] + (cb[1] - ca[1]) * u, ca[2] + (cb[2] - ca[2]) * u], g, .16, c, c);
+            [ca[0] + (cb[0] - ca[0]) * u, ca[1] + (cb[1] - ca[1]) * u, ca[2] + (cb[2] - ca[2]) * u], g, .16, c, c, osp * u0, osp * u);
         lx = x; ly = y; lz = z;
       }
       syn++;
@@ -572,24 +576,28 @@ function buildBrain(){
   lg.setAttribute('grp', new THREE.Float32BufferAttribute(LG, 1));
   lg.setAttribute('shade', new THREE.Float32BufferAttribute(LS, 1));
   lg.setAttribute('gc', new THREE.Float32BufferAttribute(LGC, 3));
+  lg.setAttribute('osp', new THREE.Float32BufferAttribute(LOSP, 1));
   SC.pullL = new Float32Array(LP.length / 3);
   lg.setAttribute('pull', new THREE.BufferAttribute(SC.pullL, 1).setUsage(THREE.DynamicDrawUsage));
   const uni = {af: {value: AF}, uMono: {value: 0}, uFade: {value: 8}, uTime: {value: 0}, uPx: {value: 800}, uGain: {value: 1},
                uHole: {value: new THREE.Vector3(HOLE.x, HOLE.y, HOLE.z)}, uHold: {value: -1}, uHoldT: {value: 0},
+               uOrbit: {value: 0},
                map: {value: SPRITE}};
   SC.uni = uni;
   SC.lines = new THREE.LineSegments(lg, new THREE.ShaderMaterial({uniforms: uni, vertexShader: BRAIN_VS_L, fragmentShader: BRAIN_FS_L, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending}));
   spin.add(SC.lines);
 
-  const pg = new THREE.BufferGeometry(), pos = new Float32Array(N * 3), col = new Float32Array(N * 3), grp = new Float32Array(N), sz = new Float32Array(N), ph = new Float32Array(N), gcP = new Float32Array(N * 3);
+  const pg = new THREE.BufferGeometry(), pos = new Float32Array(N * 3), col = new Float32Array(N * 3), grp = new Float32Array(N), sz = new Float32Array(N), ph = new Float32Array(N), gcP = new Float32Array(N * 3), ospP = new Float32Array(N);
   for (let i = 0; i < N; i++) {
     pos[i * 3] = px[i]; pos[i * 3 + 1] = py[i]; pos[i * 3 + 2] = pz[i];
     const c = ncol(i); col.set(c, i * 3); grp[i] = ng[i]; sz[i] = ns[i]; ph[i] = R();
     const cc = CL[ng[i]] || CL[0]; gcP[i * 3] = cc.x; gcP[i * 3 + 1] = cc.y; gcP[i * 3 + 2] = cc.z;
+    ospP[i] = SC.osp[ng[i]] || 0;
   }
   pg.setAttribute('position', new THREE.BufferAttribute(pos, 3)); pg.setAttribute('col', new THREE.BufferAttribute(col, 3));
   pg.setAttribute('grp', new THREE.BufferAttribute(grp, 1)); pg.setAttribute('sz', new THREE.BufferAttribute(sz, 1)); pg.setAttribute('ph', new THREE.BufferAttribute(ph, 1));
   pg.setAttribute('gc', new THREE.BufferAttribute(gcP, 3));
+  pg.setAttribute('osp', new THREE.BufferAttribute(ospP, 1));
   SC.pullP = new Float32Array(N);
   pg.setAttribute('pull', new THREE.BufferAttribute(SC.pullP, 1).setUsage(THREE.DynamicDrawUsage));
   SC.pts = new THREE.Points(pg, new THREE.ShaderMaterial({uniforms: uni, vertexShader: BRAIN_VS_P, fragmentShader: PT_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending}));
@@ -615,73 +623,116 @@ function buildBrain(){
   SC.pullIdxL = Array.from({length: AFG}, () => []);
   for (let v = 0; v < LPG.length; v++) { const g = LPG[v]; if (g < AFG) SC.pullIdxL[g].push(v); }
 
+  /* 每条记忆 = 一颗带星芒的星 */
+  SC.memSpr = [];
+  for (let c = 1; c < SC.n; c++) {
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({map: starTex(), color: 0xffffff, transparent: true,
+      opacity: .9, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false}));
+    spr.scale.setScalar(.09);
+    spr.position.copy(CL[c]);
+    spin.add(spr);
+    SC.memSpr.push(spr);
+  }
+
   probe.p = new V(CL[0].x, CL[0].y, CL[0].z + .12); probe.a = probe.p.clone(); probe.b = probe.p.clone(); probe.c = probe.p.clone();
 }
 
-/* ---------- 黑洞：视界 + 光子环 + 吸积盘 ---------- */
-const DISK_VS = `
+/* ---------- 黑洞：事件视界（移植 agent-display「06 · 视界熔炉」） ---------- */
+const HOLE_VS = `
+attribute vec2 aQ;
+uniform vec2 uRes; uniform vec2 uCtr; uniform float uHalf;
 varying vec2 vP;
-void main(){ vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
-const DISK_FS = `
-uniform float uTime; uniform float uR0; uniform float uR1; uniform float uHeat;
-varying vec2 vP;
-float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
-float noise(vec2 p){
-  vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+void main(){ vP = uCtr + aQ * uHalf; gl_Position = vec4(vP.x / uRes.x * 2.0 - 1.0, 1.0 - vP.y / uRes.y * 2.0, 0.0, 1.0); }`;
+const HOLE_FS = `
+precision highp float;
+uniform vec2 uCtr; uniform float uR, uTime, uEnergy, uPulse, uWarm, uAlpha; varying vec2 vP;
+float sq(float x){ return x * x; }
+void main(){
+  vec2 q = vP - uCtr; q.y = -q.y;
+  float r = length(q) / uR; float ang = atan(q.y, q.x);
+  vec3 tint = mix(vec3(0.80, 0.88, 1.0), vec3(1.0, 0.80, 0.62), uWarm);
+  float beam = 0.5 + 0.5 * cos(ang - 2.3);
+  float glow = exp(-max(r - 1.0, 0.0) * 2.5) * 0.17 * (0.75 + uEnergy * 0.7);
+  float s1 = 0.5 + 0.5 * sin(ang * 9.0 + r * 13.0 - uTime * 1.2);
+  float s2 = 0.5 + 0.5 * sin(ang * 17.0 - r * 21.0 + uTime * 0.8 + 1.7);
+  float band = exp(-sq((r - 1.28) / 0.34));
+  float acc = band * (s1 * 0.6 + s2 * 0.4) * 0.11 * (0.6 + uEnergy);
+  float ring = exp(-sq((r - 1.0) / 0.02)) * (0.45 + 0.95 * beam) * (0.85 + uEnergy * 0.6);
+  float ring2 = exp(-sq((r - 1.05) / 0.07)) * 0.22 * (0.4 + beam);
+  float halo = exp(-sq((r - 1.62) / 0.045)) * 0.05;
+  float pr = 1.0 + uPulse * 3.6;
+  float shock = uPulse > 0.0 ? exp(-sq((r - pr) / (0.05 + uPulse * 0.12))) * (1.0 - uPulse) * 0.55 : 0.0;
+  vec3 col = tint * (glow * (0.6 + 0.6 * beam) + acc + ring + ring2 + halo + shock);
+  float disc = 1.0 - smoothstep(0.985, 1.0, r);
+  vec3 dcol = vec3(0.004, 0.005, 0.008) + tint * 0.035 * smoothstep(0.55, 1.0, r) * beam;
+  gl_FragColor = vec4(col * (1.0 - disc) + dcol * disc, disc) * uAlpha;
+}`;
+/* 星：核心 + 四角衍射星芒 */
+let STAR_TEX = null;
+function starTex(){
+  if (STAR_TEX) return STAR_TEX;
+  const S = 160, c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d'), cx = S / 2;
+  const gr = g.createRadialGradient(cx, cx, 0, cx, cx, S / 2);
+  gr.addColorStop(0, 'rgba(255,255,255,1)');
+  gr.addColorStop(.05, 'rgba(255,255,255,.92)');
+  gr.addColorStop(.15, 'rgba(205,238,255,.42)');
+  gr.addColorStop(.42, 'rgba(140,190,255,.12)');
+  gr.addColorStop(1, 'rgba(90,140,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, S, S);
+  g.globalCompositeOperation = 'lighter';
+  const spike = (a, len, w, al) => {
+    g.save(); g.translate(cx, cx); g.rotate(a);
+    const lg = g.createLinearGradient(-len, 0, len, 0);
+    lg.addColorStop(0, 'rgba(255,255,255,0)');
+    lg.addColorStop(.5, 'rgba(255,255,255,' + al + ')');
+    lg.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = lg;
+    g.beginPath(); g.moveTo(-len, 0); g.lineTo(0, -w); g.lineTo(len, 0); g.lineTo(0, w); g.closePath(); g.fill();
+    g.restore();
+  };
+  spike(0, S * .49, 1.9, .5);
+  spike(Math.PI / 2, S * .49, 1.9, .5);
+  spike(Math.PI / 4, S * .25, 1.3, .26);
+  spike(-Math.PI / 4, S * .25, 1.3, .26);
+  STAR_TEX = new THREE.CanvasTexture(c);
+  return STAR_TEX;
 }
-void main(){
-  float r = length(vP), a = atan(vP.y, vP.x);
-  float t = clamp((r - uR0) / max(.0001, uR1 - uR0), 0.0, 1.0);
-  float band = smoothstep(0.0, .14, t) * (1.0 - smoothstep(.42, 1.0, t));
-  float swirl = a + uTime * (.85 / (.32 + t * 1.6));        // 差速自转：内圈转得快
-  float streak = noise(vec2(swirl * 2.4, t * 8.0 - uTime * .42));
-  streak = pow(clamp(streak, 0.0, 1.0), 2.3);
-  float w = smoothstep(.32, 1.0, streak);
-  vec3 col = mix(vec3(1.0, .95, .84), vec3(1.0, .40, .10), clamp(t * 1.55, 0.0, 1.0));
-  float al = band * (.20 + w * .95) * (.85 + .3 * sin(uTime * .8)) * (.8 + uHeat * .5);
-  gl_FragColor = vec4(col, al);
-}`;
-const PHOTON_VS = `
-varying vec2 vP;
-void main(){ vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
-const PHOTON_FS = `
-uniform float uTime; varying vec2 vP;
-void main(){
-  float r = length(vP), a = atan(vP.y, vP.x);
-  float e = smoothstep(0.0, .06, r) * (1.0 - smoothstep(.72, 1.0, r));
-  float glow = .72 + .28 * sin(a * 9.0 + uTime * 1.6);
-  gl_FragColor = vec4(1.0, .82, .58, e * glow * .95);
-}`;
+/* 黑洞是屏幕空间的：把它的中心/半径换算到当前渲染分辨率上 */
+function syncHole(rw, rh){
+  if (!SC.holeUni) return;
+  const u = SC.holeUni, hp = SC.holePos || CL[0];
+  const [hx, hy] = screenOf(hp);
+  const t = Math.tan(camera.fov * Math.PI / 360);
+  const pxPer = rh / (2 * t * Math.max(.01, fitD));
+  const R = HOLE.r * pxPer;
+  u.uRes.value.set(rw, rh);
+  u.uCtr.value.set(hx * rw / Math.max(1, W), hy * rh / Math.max(1, H));
+  u.uR.value = R;
+  u.uHalf.value = R * 6;
+  u.uTime.value = animT;
+  u.uEnergy.value = clamp(.35 + SC.absorbed * .05 + boost * .35, 0, 1.4);
+  u.uWarm.value = clamp(.22 + SC.absorbed * .04, 0, 1);
+  u.uPulse.value = SC.holePulse || 0;
+}
 function buildHole(){
-  SC.hole = new THREE.Group();
-  SC.hole.position.set(HOLE.x, HOLE.y, HOLE.z);
-  spin.add(SC.hole);
-  /* 视界：纯黑球体，把背后的星尘挡住 */
-  const core = new THREE.Mesh(new THREE.SphereGeometry(HOLE.r, 40, 28), new THREE.MeshBasicMaterial({color: 0x000000}));
-  SC.hole.add(core);
-  /* 光子环：视界边缘那一圈被引力透镜拉亮的环 */
-  const ph = new THREE.Mesh(new THREE.RingGeometry(HOLE.r * 1.02, HOLE.r * 1.42, 128),
-    new THREE.ShaderMaterial({uniforms: {uTime: {value: 0}}, vertexShader: PHOTON_VS, fragmentShader: PHOTON_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide}));
-  SC.hole.add(ph); SC.photon = ph;
-  /* 吸积盘：倾斜的自转盘，径向条纹 + 角向流动 */
-  const dk = new THREE.Mesh(new THREE.RingGeometry(HOLE.r * 1.45, HOLE.r * 4.6, 180, 1),
-    new THREE.ShaderMaterial({uniforms: {uTime: {value: 0}, uR0: {value: HOLE.r * 1.45}, uR1: {value: HOLE.r * 4.6}, uHeat: {value: 0}},
-      vertexShader: DISK_VS, fragmentShader: DISK_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide}));
-  dk.rotation.x = Math.PI * .40; dk.rotation.z = .3;
-  SC.hole.add(dk); SC.disk = dk;
-  /* 引力透镜的光晕 */
-  const halo = new THREE.Sprite(new THREE.SpriteMaterial({map: SPRITE, color: 0xff9a4a, transparent: true, opacity: .3, blending: THREE.AdditiveBlending, depthWrite: false}));
-  halo.scale.setScalar(HOLE.r * 7); SC.hole.add(halo); SC.halo = halo;
-  /* 被吸进去时溅出的粒子 */
-  SC.holeSpark = [];
-  for (let k = 0; k < 10; k++) {
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({map: SPRITE, color: 0xffb877, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false}));
-    s.scale.setScalar(.05); s.visible = false; SC.hole.add(s); SC.holeSpark.push({s, t: 9});
-  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 3));
+  g.setAttribute('aQ', new THREE.Float32BufferAttribute([-1, -1, 1, -1, -1, 1, 1, 1], 2));
+  g.setIndex([0, 1, 2, 2, 1, 3]);
+  SC.holeUni = {uRes: {value: new THREE.Vector2(1, 1)}, uCtr: {value: new THREE.Vector2(0, 0)}, uHalf: {value: 1}, uR: {value: 1},
+                uTime: {value: 0}, uEnergy: {value: .5}, uPulse: {value: 0}, uWarm: {value: .35}, uAlpha: {value: 1}};
+  const m = new THREE.ShaderMaterial({uniforms: SC.holeUni, vertexShader: HOLE_VS, fragmentShader: HOLE_FS,
+    transparent: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide, blending: THREE.CustomBlending,
+    blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendEquation: THREE.AddEquation});
+  SC.hole = new THREE.Mesh(g, m);
+  SC.hole.frustumCulled = false;
+  SC.hole.renderOrder = 900;
+  scene.add(SC.hole);
+  SC.holePos = new THREE.Vector3(HOLE.x, HOLE.y, HOLE.z);
+  SC.holePulse = 0;
 }
 
-/* ---------- HUD 星环 ---------- */
 function lineMat(op, col){ return new THREE.LineBasicMaterial({color: col || 0xd4e8ff, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false}); }
 function circle(r, z, op, seg = 320){ const a = new Float32Array(seg * 3); for (let i = 0; i < seg; i++) { const t = i / seg * TAU; a[i * 3] = Math.cos(t) * r; a[i * 3 + 1] = Math.sin(t) * r; a[i * 3 + 2] = z; } const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(a, 3)); return new THREE.LineLoop(g, lineMat(op)); }
 function ticks(r, n, len, every, long, op){ const a = []; for (let i = 0; i < n; i++) { const t = i / n * TAU, l = i % every === 0 ? long : len; a.push(Math.cos(t) * r, Math.sin(t) * r, 0, Math.cos(t) * (r + l), Math.sin(t) * (r + l), 0); } const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(a, 3)); return new THREE.LineSegments(g, lineMat(op)); }
@@ -732,7 +783,7 @@ function buildHud(){
   // 扇区 + 通道环（静止）
   const rc = document.createElement('canvas'); rc.width = RW; rc.height = RH; ringCtx = rc.getContext('2d');
   ringTex = new THREE.CanvasTexture(rc); ringTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  ringRing = polarRing(2.31, 2.69, 512, ringTex, 1); ringRing.position.z = -.04; spin.add(ringRing);
+  // 外围那圈「肥鱼 / 遗忘站 / 空位」标签环按用户要求整圈删除
   // 虚线轨
   { const dc = document.createElement('canvas'); dc.width = 2048; dc.height = 8; const x = dc.getContext('2d'); x.fillStyle = '#fff';
     for (let px = 0; px < 2048;) { const w = 4 + R() * 40, gap = 3 + R() * 22; if (R() < .82) { x.globalAlpha = .3 + R() * .6; x.fillRect(px, 1, w, 6); } px += w + gap; }
@@ -1258,7 +1309,7 @@ function updateScene(dt){
     if (m.status === 'faded' || m.status === 'archived') m.target = Math.min(1, m.target + dt * (m.status === 'archived' ? .008 : .011));
     m.fade += (m.target - m.fade) * Math.min(1, dt * .35);
     if (m.fade >= .985 && m.target > .9) {
-      m.dead = true; SC.absorbed++; SC.gone[m.id] = 1;
+      m.dead = true; SC.absorbed++; SC.gone[m.id] = 1; SC.holePulse = 1;
       log(0, '消散', `#${m.id} ${starLabel(m)} → 黑洞`, 'bad');
       SC.mem.splice(g - 1, 1); SC.col.splice(g, 1);
       buildBrain(); pullDirty = true; g--;
@@ -1322,14 +1373,26 @@ function updateScene(dt){
   scans.forEach(s => { if (!s.m.visible) return; s.t += dt; const k = s.t / 1.2; if (k >= 1) { s.m.visible = false; return; } s.m.scale.setScalar(.07 + .38 * k); s.m.material.opacity = (1 - k) * .9; s.m.lookAt(camera.position); });
   streaks.material.uniforms.uTime.value = animT; streaks.material.uniforms.uBoost.value = boost;
   dust.rotation.y = animT * .004; dust.rotation.x = animT * .002;
-  // 黑洞：盘在转、光子环在呼吸
-  if (SC.disk) { SC.disk.material.uniforms.uTime.value = animT; SC.disk.material.uniforms.uHeat.value = clamp(SC.absorbed / 10, 0, 1); SC.disk.rotation.z = .3 + animT * .05; }
-  if (SC.photon) SC.photon.material.uniforms.uTime.value = animT;
-  if (SC.halo) SC.halo.material.opacity = .26 + .07 * Math.sin(animT * 1.7);
-  SC.holeSpark.forEach(q => { if (!q.s.visible) return; q.t += dt; const k = q.t / .9; if (k >= 1) { q.s.visible = false; return; } q.s.scale.setScalar(.04 + .14 * (1 - k)); q.s.material.opacity = (1 - k) * .85; });
+  // 轨道时钟 + 每颗记忆星的位置 / 亮度
+  if (SC.uni) SC.uni.uOrbit.value = sceneT;
+  for (let g = 1; g < SC.n; g++) {
+    const m = SC.mem[g - 1], spr = SC.memSpr && SC.memSpr[g - 1];
+    if (!m || !spr) continue;
+    const c = CL[g], ang = sceneT * (SC.osp[g] || 0) * (1 - m.fade);
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    spr.position.set(c.x * ca - c.y * sa, c.x * sa + c.y * ca, c.z);
+    const br = clamp(AF[g * 2], 0, 1.2);
+    const col = SC.col[g] || [1, 1, 1];
+    spr.material.color.setRGB(col[0], col[1], col[2]);
+    spr.material.opacity = clamp((1 - m.fade * .92) * (.22 + br * .9), 0, 1);
+    spr.scale.setScalar((.052 + (m.importance || 0) * .045) * (.8 + br * .55) * (1 + m.fade * .6));
+  }
+  // 黑洞：事件视界（移植「视界熔炉」）
+  SC.holePulse = Math.max(0, (SC.holePulse || 0) - dt * .55);
+  syncHole(W * pr, H * pr);
   // 浮层：恒星的名字和黑洞的位置跟着 3D 走
   if (SC.ovl) {
-    const hp = SC.hole ? SC.hole.position : CL[0];
+    const hp = SC.holePos || CL[0];
     const [bx, by] = screenOf(CL[0]), [hx, hy] = screenOf(hp);
     SC.ovl.style.setProperty('--bx', bx.toFixed(1) + 'px');
     SC.ovl.style.setProperty('--by', by.toFixed(1) + 'px');
@@ -1358,7 +1421,7 @@ function frame(now){
   uiAcc += dt; tapeAcc += dt;
   if (uiAcc >= .25) {
     uiAcc = 0;
-    renderList(); renderBottom(); renderHeat(); renderSpark(); drawRing(); renderMem(); renderBot();
+    renderList(); renderBottom(); renderHeat(); renderSpark(); renderMem(); renderBot();
     if (feedDirty) renderFeed();
     if (capDirty) renderCap();
     if (tapeDirty && tapeAcc > 1) { tapeAcc = 0; drawTape(); }
@@ -1627,7 +1690,7 @@ function setModel(m){
 
   refreshRows();
   $('#ltMeta').textContent = ltMetaText();
-  renderList(); renderBottom(); renderHeat(); renderSpark(); drawRing(); renderMem(); renderBot();
+  renderList(); renderBottom(); renderHeat(); renderSpark(); renderMem(); renderBot();
   if (feedDirty) renderFeed();
   if (capDirty) renderCap();
   tapeDirty = true;
@@ -1654,25 +1717,46 @@ if (starPool.length) {
 AG.forEach(a => a.hitT = 0);
 new ResizeObserver(() => layout()).observe(host);
 layout();
-if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { drawRing(); drawTape(); layout(); });
-drawRing(); drawTape(); renderList(); renderFeed(); renderCap(); renderBottom(); renderHeat(); renderSpark(); renderMem(); renderBot(); bindBotName();
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { drawTape(); layout(); });
+drawTape(); renderList(); renderFeed(); renderCap(); renderBottom(); renderHeat(); renderSpark(); renderMem(); renderBot(); bindBotName();
 clockTick(); setInterval(clockTick, 1000);
 syncButtons();
 // 调试用：快进模拟若干秒（控制台里 document.getElementById('host-neural').__nr.ff(20)）
 host.__nr = {ff(sec){ for (let t = 0; t < sec; t += .05) { simStep(.05); decay(.05); animT += .05; } needsT = 1; },
               setModel, model: MODEL, feed, tasks, stars: starPool, ag: AG,
               /* 给自动化探针用 */
-              starScreen(){ return SC.mem.map((m, i) => { const p = screenOf(CL[i + 1]); return {id: m.id, x: p[0], y: p[1], fade: m.fade, status: m.status, scope: m.scope}; }); },
-              marks(){ if (!glOK) return null; const b = screenOf(CL[0]), h = screenOf(SC.hole ? SC.hole.position : CL[0]);
+              starScreen(){ return SC.mem.map((m, i) => { const g = i + 1, c = CL[g];
+                              const ang = sceneT * (SC.osp[g] || 0) * (1 - m.fade), ca = Math.cos(ang), sa = Math.sin(ang);
+                              const p = screenOf(new THREE.Vector3(c.x * ca - c.y * sa, c.x * sa + c.y * ca, c.z));
+                              return {id: m.id, x: p[0], y: p[1], fade: m.fade, status: m.status, scope: m.scope}; }); },
+              marks(){ if (!glOK) return null; const b = screenOf(CL[0]), h = screenOf(SC.holePos || CL[0]);
                        return {bot: {x: b[0], y: b[1]}, hole: {x: h[0], y: h[1]}, groups: SC.n, mems: SC.mem.length, absorbed: SC.absorbed,
-                               holeWorld: [HOLE.x, HOLE.y, HOLE.z], cam: {yaw: cam.yaw, pitch: cam.pitch, zoom: cam.zoom}}; },
+                               holeWorld: [HOLE.x, HOLE.y, HOLE.z], cam: {yaw: cam.yaw, pitch: cam.pitch, zoom: cam.zoom},
+                                holeDbg: SC.holeUni ? {inScene: !!SC.hole.parent, vis: SC.hole.visible,
+                                  ctr: [SC.holeUni.uCtr.value.x, SC.holeUni.uCtr.value.y], r: SC.holeUni.uR.value,
+                                  half: SC.holeUni.uHalf.value, res: [SC.holeUni.uRes.value.x, SC.holeUni.uRes.value.y],
+                                  alpha: SC.holeUni.uAlpha.value} : null}; },
               probe3d(){ if (!glOK) return null; const RW = 320, RH = 180, rt = new THREE.WebGLRenderTarget(RW, RH);
-                        const old = renderer.getRenderTarget(); renderer.setRenderTarget(rt); renderer.render(scene, camera);
+                        const old = renderer.getRenderTarget(); renderer.setRenderTarget(rt);
+                        syncHole(RW, RH); renderer.render(scene, camera);
                         const buf = new Uint8Array(RW * RH * 4); renderer.readRenderTargetPixels(rt, 0, 0, RW, RH, buf);
                         renderer.setRenderTarget(old); rt.dispose();
                         let orange = 0, cyan = 0, bright = 0, sum = 0;
                         for (let i = 0; i < RW * RH; i++) { const r = buf[i*4], g = buf[i*4+1], b = buf[i*4+2], L = r+g+b; sum += L;
                           if (L > 120) bright++; if (r > 90 && r > b * 1.5 && g > b) orange++; if (g > 80 && b > 80 && r < g * .85) cyan++; }
-                        return {size: [RW, RH], nonBlackPx: bright, orangePx: orange, cyanPx: cyan, avgLum: Math.round(sum / (RW * RH)), mems: SC.mem.length}; }};
+                        // 黑洞暗盘：视界内部应该几乎全黑
+                        const [hx, hy] = screenOf(SC.holePos || CL[0]);
+                        const cx = Math.round(hx * RW / Math.max(1, W)), cy = Math.round((1 - hy / Math.max(1, H)) * RH);
+                        let discDark = 0, discTotal = 0, ringLum = 0, ringTotal = 0;
+                        for (let y = cy - 6; y <= cy + 6; y++) for (let x = cx - 6; x <= cx + 6; x++) {
+                          if (x < 0 || y < 0 || x >= RW || y >= RH) continue;
+                          const o = (y * RW + x) * 4, L = buf[o] + buf[o+1] + buf[o+2]; discTotal++; if (L < 12) discDark++;
+                        }
+                        for (let y = cy - 22; y <= cy - 12; y++) for (let x = cx - 22; x <= cx + 12; x++) {
+                          if (x < 0 || y < 0 || x >= RW || y >= RH) continue;
+                          const o = (y * RW + x) * 4; ringTotal++; ringLum += buf[o] + buf[o+1] + buf[o+2];
+                        }
+                        return {size: [RW, RH], nonBlackPx: bright, orangePx: orange, cyanPx: cyan, avgLum: Math.round(sum / (RW * RH)), mems: SC.mem.length,
+                                holeDisc: {x: cx, y: cy, darkPx: discDark, totalPx: discTotal, ringLum: ringTotal ? Math.round(ringLum / ringTotal) : -1}}; }};
 requestAnimationFrame(frame);
 }
