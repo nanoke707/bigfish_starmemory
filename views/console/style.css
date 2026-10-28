@@ -114,8 +114,7 @@ body {
 .bridge-warn.hidden { display: none; }
 .bridge-warn b { color: #fff; }
 
-/* ---------- 主体三栏 ---------- */
-.hud-main {
+/* ---------- 调试台抽屉 ---------- */
 .drawer {
   position: fixed;
   top: 0; right: 0; bottom: 0;
@@ -368,30 +367,19 @@ body {
 
 /* ---------- 响应式 ---------- */
 @media (max-width: 1500px) {
-  .hud-main { grid-template-columns: 250px minmax(0, 1fr) 250px; }
-  .hud-bottom { height: 200px; }
+  .drawer { width: min(560px, 92vw); }
 }
 
 @media (max-width: 1180px) {
-  body { overflow: auto; }
-  .app { height: auto; min-height: 100vh; }
-  .hud-main { grid-template-columns: minmax(0, 1fr); }
-  .stage { height: 58vh; min-height: 380px; }
-  .hud-rail { flex-direction: row; overflow-x: auto; overflow-y: hidden; }
-  .hud-rail .panel { min-width: 260px; max-height: 240px; }
-  .hud-bottom { grid-template-columns: repeat(2, minmax(0, 1fr)); height: auto; }
-  .hud-bottom .panel { height: 210px; }
-  .hud-metrics { justify-content: flex-start; }
+  .drawer { width: min(520px, 96vw); }
+  .drawer-body { padding: 10px 11px 26px; }
 }
 
 @media (max-width: 720px) {
-  .app { padding: 8px; }
-  .hud-bottom { grid-template-columns: minmax(0, 1fr); }
   .field-row { flex-direction: column; align-items: stretch; }
   .field-ctl { justify-content: space-between; }
   .field-ctl input, .field-ctl select { width: 100%; }
   .star-actions { flex-direction: row; }
-  .hud-title { font-size: 14px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
