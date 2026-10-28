@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test deps
+        run: pip install pytest
+      - name: Run core tests
+        run: pytest tests/ -q
+      - name: Syntax check all python files
+        run: python -m compileall -q .
+      - name: Syntax check WebUI scripts
+        run: |
+          node --check views/console/app.js
+          python - <<'EOF'
+          from pathlib import Path
+          # 防止 HTML 实体被解码后混入 JS（曾导致整页按钮失效）
+          js = Path("views/console/app.js").read_text(encoding="utf-8")
+          assert 'replace(/"/g, "')' not in js, "app.js 疑似被实体解码损坏"
+          html = Path("views/console/index.html").read_text(encoding="utf-8")
+          assert "/api/plugin/page/bridge-sdk.js" in html, "缺少桥接 SDK 引用"
+          print("WebUI assets OK")
+          EOF

@@ -1,0 +1,452 @@
+{
+  "general": {
+    "description": "基本设置",
+    "hint": "星空记忆的全局开关与作用范围",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用星空记忆",
+        "hint": "关闭后插件不再召回、保存与遗忘，已有的星星会安静地躺在数据库里。",
+        "type": "bool",
+        "default": true
+      },
+      "scope_mode": {
+        "description": "记忆归属",
+        "hint": "session=每个会话一片星空（群聊各自独立，默认）；user=每个人一片星空，跨会话跟随 TA；global=所有会话共享同一片星空。",
+        "type": "string",
+        "options": ["session", "user", "global"],
+        "default": "session"
+      },
+      "bot_name": {
+        "description": "Bot 的名字",
+        "hint": "用于记忆提取提示词与对话记录署名，建议填成你平时对 TA 的称呼。",
+        "type": "string",
+        "default": "Bot"
+      },
+      "hook_budget_seconds": {
+        "description": "召回超时熔断（秒）",
+        "hint": "LLM 请求前召回的最长等待时间；超过则本轮不注入记忆，绝不让记忆拖慢对话。0 = 不限制。",
+        "type": "float",
+        "default": 0,
+        "slider": {"min": 0, "max": 30, "step": 0.5}
+      },
+      "max_stars_per_scope": {
+        "description": "单星空容量上限",
+        "hint": "每个会话/用户最多保留多少颗明亮+变暗的星星，超出后不再新增。",
+        "type": "int",
+        "default": 3000,
+        "slider": {"min": 50, "max": 20000, "step": 50}
+      }
+    }
+  },
+  "llm": {
+    "description": "语言模型",
+    "hint": "用于提炼记忆星星与判读心绪的模型",
+    "type": "object",
+    "items": {
+      "provider_id": {
+        "description": "LLM 提供商 ID",
+        "hint": "留空使用 AstrBot 当前默认提供商。建议选择一个便宜而稳定的模型，因为每轮对话都会调用一次。",
+        "type": "string",
+        "_special": "select_provider",
+        "default": ""
+      },
+      "max_retries": {
+        "description": "失败重试次数",
+        "hint": "提炼记忆调用失败时的重试次数（指数退避）。",
+        "type": "int",
+        "default": 3,
+        "slider": {"min": 1, "max": 8, "step": 1}
+      }
+    }
+  },
+  "embedding": {
+    "description": "向量模型",
+    "hint": "语义检索增强；不配置也能用关键词检索",
+    "type": "object",
+    "items": {
+      "provider_id": {
+        "description": "Embedding 提供商 ID",
+        "hint": "填写 AstrBot 中已启用的 Embedding 提供商 ID 可启用语义检索；留空或调用失败时自动退回关键词匹配，星星不会消失。",
+        "type": "string",
+        "default": ""
+      }
+    }
+  },
+  "recall": {
+    "description": "召回与注入",
+    "hint": "每次对话前想起多少、想起多准",
+    "type": "object",
+    "items": {
+      "top_k": {
+        "description": "每次注入星星数",
+        "hint": "每轮对话最多注入几颗星星，太多会挤占上下文。",
+        "type": "int",
+        "default": 5,
+        "slider": {"min": 1, "max": 15, "step": 1}
+      },
+      "min_score": {
+        "description": "召回阈值",
+        "hint": "综合得分低于该值的星星不会浮现。调低会想起更多但更模糊的事。",
+        "type": "float",
+        "default": 0.12,
+        "slider": {"min": 0.01, "max": 0.6, "step": 0.01}
+      },
+      "injection_method": {
+        "description": "注入位置",
+        "hint": "system_prompt=追加到系统提示词（推荐）；contexts=作为系统消息插入历史；off=只保存不注入。",
+        "type": "string",
+        "options": ["system_prompt", "contexts", "off"],
+        "default": "system_prompt"
+      },
+      "max_injection_chars": {
+        "description": "注入字符上限",
+        "hint": "注入块的最大字符数，超过会优先舍弃最暗的星星。",
+        "type": "int",
+        "default": 900,
+        "slider": {"min": 200, "max": 4000, "step": 50}
+      },
+      "glimmer_chance": {
+        "description": "灵光一现概率",
+        "hint": "已经变暗的星星偶尔会被突然想起（情绪浓烈或重要的更容易闪回），这是拟人记忆的随机性。",
+        "type": "float",
+        "default": 0.08,
+        "slider": {"min": 0, "max": 0.5, "step": 0.01}
+      },
+      "reinforce_on_recall": {
+        "description": "召回即复习",
+        "hint": "【不建议开启】开启后，每次被检索到的星星都会立刻巩固半衰期。「检索」不等于「强化」——只有真正被想起或有新经历印证时才会强化，否则频繁对话会让记忆永久停在高位。",
+        "type": "bool",
+        "default": false
+      }
+    }
+  },
+  "forgetting": {
+    "description": "遗忘曲线",
+    "hint": "艾宾浩斯参数：经历多快变淡、什么算可靠、什么算模糊",
+    "type": "object",
+    "items": {
+      "base_half_life_days": {
+        "description": "基准记忆半衰期（天）",
+        "hint": "新写入经历的半衰期 H_m。保留程度 R=2^(-t/H_m)：半衰期 7 天时，第 7 天剩 50%、第 14 天剩 25%、第 21 天剩 12.5%。重要程度与当时的情绪会在此基础上折算出每颗星星各自的 H_m。",
+        "type": "float",
+        "default": 7,
+        "slider": {"min": 0.5, "max": 90, "step": 0.5}
+      },
+      "max_half_life_days": {
+        "description": "半衰期上限（天）",
+        "hint": "反复被真正想起可以把某段经历的半衰期推高，但不会超过这个上限。",
+        "type": "float",
+        "default": 365,
+        "slider": {"min": 7, "max": 3650, "step": 1}
+      },
+      "detail_half_life_ratio": {
+        "description": "细节遗忘速度（相对主干）",
+        "hint": "细节默认比主干忘得快（0.45 = 细节的半衰期是主干的 45%）。角色可能还记得「拿到过奖励」，却已想不起那是什么口味。",
+        "type": "float",
+        "default": 0.45,
+        "slider": {"min": 0.05, "max": 1, "step": 0.01}
+      },
+      "clear_threshold": {
+        "description": "可靠阈值",
+        "hint": "保持率 R 高于该值时，这段经历/细节算「清楚记得」，可以当事实陈述。",
+        "type": "float",
+        "default": 0.55,
+        "slider": {"min": 0.1, "max": 0.95, "step": 0.01}
+      },
+      "vague_threshold": {
+        "description": "模糊阈值",
+        "hint": "保持率 R 高于该值但低于可靠阈值时，只能含糊其辞（「好像……吧」），不得当成确定事实。低于该值则完全不可靠。",
+        "type": "float",
+        "default": 0.2,
+        "slider": {"min": 0.01, "max": 0.9, "step": 0.01}
+      },
+      "review_boost_days": {
+        "description": "强化增益（天）",
+        "hint": "一次「真正被想起」会让这段经历的半衰期增加多少天。间隔越久（尤其快要想不起时）收益越大。",
+        "type": "float",
+        "default": 2,
+        "slider": {"min": 0, "max": 30, "step": 0.1}
+      },
+      "initial_stability_days": {
+        "description": "初始稳定度（天，兼容项）",
+        "hint": "早期配置项。记忆衰减现用「半衰期」表达，该项仅用于兼容旧配置。",
+        "type": "float",
+        "default": 1.2,
+        "slider": {"min": 0.2, "max": 14, "step": 0.1}
+      },
+      "max_stability_days": {
+        "description": "稳定度上限（天，兼容项）",
+        "hint": "早期配置项。现由「半衰期上限」控制。",
+        "type": "float",
+        "default": 120,
+        "slider": {"min": 7, "max": 730, "step": 1}
+      },
+      "fade_threshold": {
+        "description": "变暗阈值",
+        "hint": "保持率低于该值时星星进入「变暗」状态，几乎不再被想起（仍有灵光一现）。",
+        "type": "float",
+        "default": 0.18,
+        "slider": {"min": 0.02, "max": 0.6, "step": 0.01}
+      },
+      "forget_threshold": {
+        "description": "熄灭阈值",
+        "hint": "保持率低于该值且未被珍藏时，星星熄灭归档。该值会被自动钳制在变暗阈值以下。",
+        "type": "float",
+        "default": 0.05,
+        "slider": {"min": 0.005, "max": 0.3, "step": 0.005}
+      },
+      "review_boost": {
+        "description": "复习增益",
+        "hint": "每次被想起时稳定度的增幅系数。越大，复习的效果越明显。",
+        "type": "float",
+        "default": 0.8,
+        "slider": {"min": 0.1, "max": 4, "step": 0.1}
+      },
+      "negative_fade_bonus": {
+        "description": "放下小事的额外折旧",
+        "hint": "心情愉悦时，对既不重要又不愉快的琐碎记忆额外加速遗忘（拟人化的「选择性放下」）。0 = 关闭。",
+        "type": "float",
+        "default": 0.12,
+        "slider": {"min": 0, "max": 0.5, "step": 0.01}
+      },
+      "purge_archived": {
+        "description": "自动清理熄灭的星星",
+        "hint": "开启后，熄灭超过下方天数的记忆会被彻底删除（不可恢复）。默认关闭，只是安静归档。",
+        "type": "bool",
+        "default": false
+      },
+      "purge_after_days": {
+        "description": "熄灭多少天后清理",
+        "hint": "仅当自动清理开启时生效。",
+        "type": "int",
+        "default": 30,
+        "slider": {"min": 1, "max": 365, "step": 1}
+      },
+      "maintenance_hour": {
+        "description": "每日维护时刻（小时）",
+        "hint": "每天这个整点过后几分钟，推进全部星空的遗忘曲线（默认凌晨 4 点）。错过会自动补跑。",
+        "type": "int",
+        "default": 4,
+        "slider": {"min": 0, "max": 23, "step": 1}
+      }
+    }
+  },
+  "mood": {
+    "description": "星云心绪",
+    "hint": "bot 的情绪状态及其对记忆的影响",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用心绪系统",
+        "hint": "关闭后 bot 不再有情绪状态，记忆只剩纯遗忘曲线。",
+        "type": "bool",
+        "default": true
+      },
+      "inject_mood_hint": {
+        "description": "注入心绪提示",
+        "hint": "把当前心绪写成一行提示注入上下文，让回复自然带上情绪色彩。",
+        "type": "bool",
+        "default": true
+      },
+      "recall_bias_strength": {
+        "description": "心境一致性强度",
+        "hint": "与当前心情同频的记忆更容易浮现，反向的记忆稍难想起（拟人化的「触景生情」）。0 = 关闭。",
+        "type": "float",
+        "default": 1,
+        "slider": {"min": 0, "max": 3, "step": 0.1}
+      },
+      "resonance_strength": {
+        "description": "回忆共鸣强度",
+        "hint": "想起旧星星时对其情绪的吸收程度：想起开心的事会更明亮，想起遗憾会蒙上薄雾。0 = 关闭。",
+        "type": "float",
+        "default": 0.05,
+        "slider": {"min": 0, "max": 0.3, "step": 0.01}
+      }
+    }
+  },
+  "emotion": {
+    "description": "情绪半衰期",
+    "hint": "情绪有自己独立的衰减速度，与记忆遗忘曲线完全分开",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用事件情绪",
+        "hint": "关闭后不再记录事件发生时的原始情绪（记忆遗忘曲线不受影响）。",
+        "type": "bool",
+        "default": true
+      },
+      "base_half_life_days": {
+        "description": "默认情绪半衰期（天）",
+        "hint": "情绪残留 E(t)=E0·2^(-t/H_e)。原始强度 0.8、半衰期 2 天时：第 2 天剩 0.4、第 4 天剩 0.2、第 6 天剩 0.1。",
+        "type": "float",
+        "default": 2,
+        "slider": {"min": 0.1, "max": 90, "step": 0.1}
+      },
+      "happy_days": {
+        "description": "开心 · 半衰期（天）",
+        "hint": "愉快的情绪通常消退得慢一些。",
+        "type": "float",
+        "default": 3,
+        "slider": {"min": 0.1, "max": 90, "step": 0.1}
+      },
+      "sad_days": {
+        "description": "难过 · 半衰期（天）",
+        "hint": "悲伤往往比喜悦留存更久。",
+        "type": "float",
+        "default": 4,
+        "slider": {"min": 0.1, "max": 90, "step": 0.1}
+      },
+      "anger_days": {
+        "description": "生气 · 半衰期（天）",
+        "hint": "愤怒来得快去得也快——角色会逐渐不再生气，却依然记得那件事。",
+        "type": "float",
+        "default": 2,
+        "slider": {"min": 0.1, "max": 90, "step": 0.1}
+      },
+      "disappointment_days": {
+        "description": "失望 · 半衰期（天）",
+        "hint": "失望是一种绵长的情绪。",
+        "type": "float",
+        "default": 2.5,
+        "slider": {"min": 0.1, "max": 90, "step": 0.1}
+      },
+      "gratitude_days": {
+        "description": "感激 · 半衰期（天）",
+        "hint": "感激通常留得比较久。",
+        "type": "float",
+        "default": 5,
+        "slider": {"min": 0.1, "max": 365, "step": 0.1}
+      },
+      "trust_days": {
+        "description": "信任 · 半衰期（天）",
+        "hint": "信任是很慢建立的情感，因此衰减也最慢。",
+        "type": "float",
+        "default": 14,
+        "slider": {"min": 0.1, "max": 3650, "step": 0.5}
+      },
+      "fear_days": {
+        "description": "害怕 · 半衰期（天）",
+        "hint": "恐惧消退得很快。",
+        "type": "float",
+        "default": 1.5,
+        "slider": {"min": 0.1, "max": 90, "step": 0.1}
+      },
+      "surprise_days": {
+        "description": "惊讶 · 半衰期（天）",
+        "hint": "惊讶几乎是即时的。",
+        "type": "float",
+        "default": 0.8,
+        "slider": {"min": 0.1, "max": 90, "step": 0.1}
+      },
+      "calm_days": {
+        "description": "平静 · 半衰期（天）",
+        "hint": "平静本身没有强度，通常会被忽略。",
+        "type": "float",
+        "default": 6,
+        "slider": {"min": 0.1, "max": 365, "step": 0.1}
+      },
+      "residual_floor": {
+        "description": "可忽略残留阈值",
+        "hint": "情绪残留低于该强度时，表现层可以忽略它（但原始情绪记录永远保留，不会被删除）。",
+        "type": "float",
+        "default": 0.002,
+        "slider": {"min": 0, "max": 0.2, "step": 0.001}
+      },
+      "reactivate_boost": {
+        "description": "重新激活的临时增益",
+        "hint": "旧经历被重新唤起时，本轮情绪残留临时放大的比例。只会放大「当前残留」，不会改写原始情绪强度 E0，也不会重置半衰期。",
+        "type": "float",
+        "default": 0.5,
+        "slider": {"min": 0, "max": 3, "step": 0.1}
+      },
+      "reinforce_enabled": {
+        "description": "允许情绪强化",
+        "hint": "开启后，只有在出现明确的新经历/新情绪事件时，才会更新旧记忆的情绪时间锚点（并记录依据）。记忆被强化时，情绪不会跟着恢复。",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "consolidation": {
+    "description": "凝星（记忆保存）",
+    "hint": "对话如何被提炼成星星",
+    "type": "object",
+    "items": {
+      "every_n_turns": {
+        "description": "每 N 轮对话凝星一次",
+        "hint": "1 = 每轮对话后都提炼（推荐）；3 = 攒三轮一起提炼，省 token 但星星颗粒度更粗。",
+        "type": "int",
+        "default": 1,
+        "slider": {"min": 1, "max": 10, "step": 1}
+      },
+      "min_transcript_chars": {
+        "description": "最短对话长度",
+        "hint": "本轮对话文本少于该字符数时跳过提炼（例如只发了一个「哦」）。",
+        "type": "int",
+        "default": 6,
+        "slider": {"min": 1, "max": 200, "step": 1}
+      },
+      "max_memories_per_turn": {
+        "description": "单轮最多凝几颗星",
+        "hint": "一次提炼最多保存几条记忆，防止刷屏式写入。",
+        "type": "int",
+        "default": 3,
+        "slider": {"min": 1, "max": 8, "step": 1}
+      },
+      "dedup_similarity": {
+        "description": "语义去重阈值",
+        "hint": "新记忆与近期星星的向量相似度超过该值时视为重复，改为巩固旧星星而非新增。需要配置向量模型。",
+        "type": "float",
+        "default": 0.88,
+        "slider": {"min": 0.6, "max": 0.99, "step": 0.01}
+      }
+    }
+  },
+  "group": {
+    "description": "群聊旁听",
+    "hint": "把群里的闲聊暂存为背景星尘",
+    "type": "object",
+    "items": {
+      "capture_all_messages": {
+        "description": "旁听群聊消息",
+        "hint": "记录群里所有未唤醒 bot 的消息，凝星时作为背景上下文（只存最近一小段，不作长期记忆）。",
+        "type": "bool",
+        "default": true
+      },
+      "max_stardust_lines": {
+        "description": "星尘条数上限",
+        "hint": "每次凝星最多携带多少条旁听消息。0 = 不使用星尘。",
+        "type": "int",
+        "default": 30,
+        "slider": {"min": 0, "max": 100, "step": 5}
+      },
+      "min_line_chars": {
+        "description": "星尘最短长度",
+        "hint": "太短的灌水消息不记录。",
+        "type": "int",
+        "default": 4,
+        "slider": {"min": 0, "max": 50, "step": 1}
+      }
+    }
+  },
+  "tools": {
+    "description": "Agent 工具",
+    "hint": "允许 LLM 主动使用的记忆工具",
+    "type": "object",
+    "items": {
+      "enable_recall_tool": {
+        "description": "主动回忆工具",
+        "hint": "注册 star_memory_recall 工具，让 bot 在觉得「好像聊过」时自己翻星空。",
+        "type": "bool",
+        "default": true
+      },
+      "enable_memorize_tool": {
+        "description": "主动凝星工具",
+        "hint": "注册 star_memory_memorize 工具，让 bot 在你明确说「记住这个」时自己凝星。默认关闭（凝星已由每轮整理自动完成）。",
+        "type": "bool",
+        "default": false
+      }
+    }
+  }
+}

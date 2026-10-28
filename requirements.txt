@@ -1,0 +1,3 @@
+# bigfish_starmemory 无任何第三方运行时依赖。
+# 核心检索使用标准库（sqlite3 / math / json / hashlib）；
+# 向量检索复用 AstrBot 已配置的 Embedding Provider，不额外拉包。
