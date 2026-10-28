@@ -3,96 +3,154 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>星空记忆 · 调试控制台</title>
+  <title>咸鱼星空记忆 · 记忆观测台</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
-<body>
-  <div class="cosmos">
-    <div class="stars-bg" aria-hidden="true"></div>
+<body data-theme="neural">
 
-    <header class="topbar">
-      <div class="brand">
-        <span class="logo">✧</span>
-        <div>
-          <h1>咸鱼星空记忆 · 调试控制台</h1>
-          <p class="sub">艾宾浩斯遗忘曲线 × 星云心绪 —— 观察每一颗星星的生灭</p>
+  <div id="app" class="app">
+
+    <!-- ================= 顶部 HUD ================= -->
+    <header class="hud-top">
+      <div class="hud-brand">
+        <span class="hud-logo" aria-hidden="true">✦</span>
+        <div class="hud-brand-text">
+          <h1 class="hud-title">咸鱼星空记忆<span class="hud-sub-en">STARMEMORY OBSERVATORY</span></h1>
+          <p class="hud-sub" id="theme-caption">神经星环 · 记忆拓扑实时观测</p>
         </div>
       </div>
-      <div class="topbar-actions">
-        <span id="bridge-status" class="bridge-status loading">桥接检测中…</span>
-        <button id="btn-maintain" class="btn ghost" title="立即推进所有会话的遗忘维护">🌙 遗忘维护</button>
-        <button id="btn-refresh" class="btn">↻ 刷新</button>
+
+      <div class="hud-metrics" id="hud-metrics" aria-label="核心读数"></div>
+
+      <div class="hud-actions">
+        <span id="bridge-status" class="bridge-pill is-loading">桥接检测中</span>
+        <button id="btn-theme" class="hud-btn" title="切换主题（快捷键 T）">◐ 主题</button>
+        <button id="btn-console" class="hud-btn" title="打开调试台（快捷键 D）">⌨ 调试台</button>
+        <button id="btn-maintain" class="hud-btn" title="立即推进所有星域的遗忘维护">🌙 维护</button>
+        <button id="btn-refresh" class="hud-btn" title="重新拉取数据（快捷键 R）">↻</button>
+        <button id="btn-full" class="hud-btn" title="全屏（快捷键 F）">⛶</button>
       </div>
     </header>
 
+    <!-- 桥接告警 -->
     <div id="bridge-warn" class="bridge-warn hidden">
-      ⚠️ 与 AstrBot 面板的桥接未就绪，数据按钮无法工作。<br>
-      请从 <b>AstrBot WebUI → 插件管理 → 咸鱼星空记忆 → 拓展页</b> 打开本页面（不要直接输入页面地址）。<br>
+      ⚠️ 与 AstrBot 面板的桥接未就绪，数据面板无法刷新。<br />
+      请从 <b>AstrBot WebUI → 插件管理 → 咸鱼星空记忆 → 拓展页</b> 打开本页面（不要直接输入页面地址）。<br />
       若仍失败：按 F12 打开浏览器控制台，把红色报错截图发给插件作者。
     </div>
 
-    <section id="overview" class="cards">
-      <div class="card total"><span class="num" id="n-total">–</span><span class="label">星星总数</span></div>
-      <div class="card bright"><span class="num" id="n-bright">–</span><span class="label">✦ 明亮</span></div>
-      <div class="card faded"><span class="num" id="n-faded">–</span><span class="label">✧ 变暗</span></div>
-      <div class="card archived"><span class="num" id="n-archived">–</span><span class="label">· 熄灭</span></div>
-      <div class="card pinned"><span class="num" id="n-pinned">–</span><span class="label">📌 珍藏</span></div>
-      <div class="card scopes"><span class="num" id="n-scopes">–</span><span class="label">会话</span></div>
-    </section>
+    <!-- ================= 主体三栏 ================= -->
+    <main class="hud-main">
 
-    <nav class="tabs">
-      <button class="tab active" data-tab="stars">✦ 星空</button>
-      <button class="tab" data-tab="search">🔍 检索调试</button>
-      <button class="tab" data-tab="scopes">🪐 会话与凝星</button>
-      <button class="tab" data-tab="settings">⚙️ 设置</button>
-    </nav>
+      <!-- 左栏 -->
+      <aside class="hud-rail hud-rail-left" id="rail-left"></aside>
 
-    <main>
-      <!-- 设置 -->
-      <section id="tab-settings" class="tabpane">
-        <p class="hint">所有修改<b>立即保存并热生效</b>（无需重载插件）。提供商下拉列表来自 AstrBot 当前配置；留空表示使用 AstrBot 默认提供商。</p>
-        <div id="settings-loading" class="empty">加载配置中……</div>
-        <div id="settings-list"></div>
-      </section>
+      <!-- 中央舞台 -->
+      <section class="stage" id="stage-wrap">
+        <canvas id="stage" class="stage-canvas"></canvas>
 
-      <!-- 星空列表 -->
-      <section id="tab-stars" class="tabpane active">
-        <div class="filterbar">
-          <div class="chips" id="status-chips">
-            <button class="chip active" data-status="all">全部</button>
-            <button class="chip" data-status="bright">明亮</button>
-            <button class="chip" data-status="faded">变暗</button>
-            <button class="chip" data-status="archived">熄灭</button>
-            <button class="chip" data-status="pinned">珍藏</button>
+        <div class="stage-chrome">
+          <div class="stage-corner tl"></div>
+          <div class="stage-corner tr"></div>
+          <div class="stage-corner bl"></div>
+          <div class="stage-corner br"></div>
+        </div>
+
+        <div class="stage-head">
+          <div class="stage-head-left">
+            <span class="stage-kicker" id="stage-kicker">NEURAL RING</span>
+            <span class="stage-title" id="stage-title">神经星环</span>
           </div>
-          <span class="hint" id="last-maintained"></span>
+          <div class="stage-head-right">
+            <span class="stage-readout" id="stage-readout">—</span>
+          </div>
         </div>
-        <div id="star-list" class="star-list"><div class="empty">加载中……</div></div>
-        <div class="pager">
-          <button id="btn-prev" class="btn small ghost">上一页</button>
-          <span id="page-indicator">第 1 页</span>
-          <button id="btn-next" class="btn small ghost">下一页</button>
+
+        <div class="stage-legend" id="stage-legend"></div>
+
+        <div class="stage-status">
+          <span class="stage-dot" id="stage-dot"></span>
+          <span id="stage-status-text">正在建立星域拓扑…</span>
+        </div>
+
+        <!-- 3D 不可用时的降级画面 -->
+        <div id="stage-fallback" class="stage-fallback hidden">
+          <div class="fallback-inner">
+            <div class="fallback-title">3D 渲染不可用</div>
+            <p class="fallback-desc" id="fallback-desc">
+              无法加载 three.js（离线或 CDN 被拦截）。数据面板仍然完全可用。
+            </p>
+            <div id="fallback-stars" class="fallback-stars"></div>
+          </div>
         </div>
       </section>
 
-      <!-- 检索调试 -->
-      <section id="tab-search" class="tabpane">
-        <div class="searchbar">
-          <input id="search-input" type="text" placeholder="输入话题，看看哪些星星会被点亮（低阈值显示原始得分）" />
-          <button id="btn-search" class="btn">检索</button>
-        </div>
-        <p class="hint">调试模式：阈值放宽到常规注入的 1/3，展示 <b>score × 可见度</b> 的原始结果与命中方式，不会巩固星星状态。</p>
-        <div id="search-results" class="star-list"></div>
-      </section>
-
-      <!-- 会话与凝星 -->
-      <section id="tab-scopes" class="tabpane">
-        <p class="hint">每个会话是一段独立星域。点击「立即凝星」可以把缓冲中的对话马上提炼成星星（平时由 N 轮一凝自动完成）。</p>
-        <div id="scope-list" class="scope-list"></div>
-      </section>
+      <!-- 右栏 -->
+      <aside class="hud-rail hud-rail-right" id="rail-right"></aside>
     </main>
 
-    <!-- 星星详情弹层 -->
+    <!-- ================= 底部面板 ================= -->
+    <section class="hud-bottom" id="hud-bottom"></section>
+
+    <!-- ================= 调试台抽屉 ================= -->
+    <aside id="drawer" class="drawer" aria-hidden="true">
+      <header class="drawer-head">
+        <div class="drawer-tabs" id="drawer-tabs">
+          <button class="drawer-tab is-active" data-dtab="stars">✦ 星空</button>
+          <button class="drawer-tab" data-dtab="search">🔍 检索调试</button>
+          <button class="drawer-tab" data-dtab="scopes">🪐 星域与凝星</button>
+          <button class="drawer-tab" data-dtab="settings">⚙️ 设置</button>
+        </div>
+        <button id="drawer-close" class="drawer-close" title="关闭（Esc）">✕</button>
+      </header>
+
+      <div class="drawer-body">
+        <!-- 星空列表 -->
+        <section class="dpane is-active" data-dpane="stars">
+          <div class="filterbar">
+            <div class="chips" id="status-chips">
+              <button class="chip is-active" data-status="all">全部</button>
+              <button class="chip" data-status="bright">明亮</button>
+              <button class="chip" data-status="faded">变暗</button>
+              <button class="chip" data-status="archived">熄灭</button>
+              <button class="chip" data-status="pinned">珍藏</button>
+            </div>
+            <span class="hint" id="last-maintained"></span>
+          </div>
+          <div id="star-list" class="star-list"><div class="empty">加载中……</div></div>
+          <div class="pager">
+            <button id="btn-prev" class="mini-btn">上一页</button>
+            <span id="page-indicator">第 1 页</span>
+            <button id="btn-next" class="mini-btn">下一页</button>
+          </div>
+        </section>
+
+        <!-- 检索调试 -->
+        <section class="dpane" data-dpane="search">
+          <div class="searchbar">
+            <input id="search-input" type="text" placeholder="输入话题，看看哪些星星会被点亮（低阈值显示原始得分）" />
+            <button id="btn-search" class="mini-btn is-primary">检索</button>
+          </div>
+          <p class="hint">调试模式：阈值放宽到常规注入的 1/3，展示 <b>score × 可见度</b> 的原始结果与命中方式，不会巩固星星状态。</p>
+          <div id="search-results" class="star-list"></div>
+        </section>
+
+        <!-- 星域与凝星 -->
+        <section class="dpane" data-dpane="scopes">
+          <p class="hint">每个会话是一段独立星域。点击「立即凝星」可以把缓冲中的对话马上提炼成星星（平时由 N 轮一凝自动完成）。</p>
+          <div id="scope-list" class="scope-list"></div>
+        </section>
+
+        <!-- 设置 -->
+        <section class="dpane" data-dpane="settings">
+          <p class="hint">所有修改<b>立即保存并热生效</b>（无需重载插件）。提供商下拉列表来自 AstrBot 当前配置；留空表示使用 AstrBot 默认提供商。</p>
+          <div id="settings-loading" class="empty">加载配置中……</div>
+          <div id="settings-list"></div>
+        </section>
+      </div>
+    </aside>
+
+    <!-- ================= 星星详情弹层 ================= -->
     <div id="modal" class="modal hidden">
       <div class="modal-box">
         <button id="modal-close" class="modal-close">✕</button>
@@ -104,6 +162,7 @@
   </div>
 
   <script src="/api/plugin/page/bridge-sdk.js"></script>
+  <script src="./scenes.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
