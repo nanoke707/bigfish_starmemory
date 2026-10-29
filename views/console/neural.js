@@ -373,7 +373,7 @@ void main(){
   p = mix(p, uHole, pull * pull * .95);
   // 绕着恒星公转：每颗星有自己的轨道平面 axs，所以是三百六十度地绕；
   // 被悬停的那颗用冻结角 uHoldAng 钉住，其余照转；被吸得越狠转得越慢
-  float ang = (abs(grp - uHold) < .5) ? uHoldAng : (uOrbit * osp + oph) * (1.0 - pull);
+  float ang = (abs(grp - uHold) < .5 && osp > 0.0) ? uHoldAng : (uOrbit * osp + oph) * (1.0 - pull);
   vec3 k = normalize(axs);
   float ca = cos(ang), sa = sin(ang);
   float kd = dot(k, p);
@@ -404,7 +404,7 @@ void main(){
   p = mix(p, gc, pull * .5);
   p = mix(p, uHole, pull * pull * .95);
   // 三维公转（每颗星自己的轨道平面）
-  float ang = (abs(grp - uHold) < .5) ? uHoldAng : (uOrbit * osp + oph) * (1.0 - pull);
+  float ang = (abs(grp - uHold) < .5 && osp > 0.0) ? uHoldAng : (uOrbit * osp + oph) * (1.0 - pull);
   vec3 k = normalize(axs);
   float ca = cos(ang), sa = sin(ang);
   float kd = dot(k, p);
@@ -575,6 +575,7 @@ function buildBrain(){
   lg.setAttribute('grp', new THREE.Float32BufferAttribute(LG, 1));
   lg.setAttribute('shade', new THREE.Float32BufferAttribute(LS, 1));
   lg.setAttribute('gc', new THREE.Float32BufferAttribute(LGC, 3));
+  SC.lpg = LPG; SC.losp = LOSP;            // 连线端点：属于哪颗星 / 角速度
   lg.setAttribute('osp', new THREE.Float32BufferAttribute(LOSP, 1));
   lg.setAttribute('oph', new THREE.Float32BufferAttribute(LOP, 1));
   lg.setAttribute('axs', new THREE.Float32BufferAttribute(LAX, 3));
@@ -975,6 +976,29 @@ function starPos(g, o){
   o.x = x; o.y = y; o.z = z;
   return o;
 }
+/* 放开悬停：把这颗星的轨道相位重新对齐，让它从「钉住的地方」接着转，不跳位 */
+function reanchorPhase(g){
+  if (!(g > 0) || g >= SC.n || !SC.oph) return;
+  const sp = SC.osp[g] || 0, m = SC.mem[g - 1];
+  const pull = m ? clamp(m.fade, 0, 1) : 0, k = 1 - pull;
+  const base = k > 1e-3 ? SC.holdAng / k : SC.holdAng;
+  const ph = base - sceneT * sp;
+  SC.oph[g] = ph;
+  // 点云：这颗星自己的核心与光晕
+  const pa = SC.pts && SC.pts.geometry.attributes.oph;
+  if (pa && MEM && MEM[g]) {
+    const arr = pa.array;
+    for (const i of MEM[g]) if (i < arr.length) arr[i] = ph;
+    pa.needsUpdate = true;
+  }
+  // 连线：端点属于这颗星、且确实在公转的，一起换相位
+  const la = SC.lines && SC.lines.geometry.attributes.oph;
+  if (la && SC.lpg && SC.losp) {
+    const arr = la.array;
+    for (let i = 0; i < arr.length; i++) if (SC.lpg[i] === g && SC.losp[i] > 0) arr[i] = ph;
+    la.needsUpdate = true;
+  }
+}
 function updateLinks(){
   if (!SC.links || !SC.linkPairs) return;
   const pos = SC.links.geometry.attributes.position.array;
@@ -1136,11 +1160,6 @@ function updateScene(dt){
   scans.forEach(s => { if (!s.m.visible) return; s.t += dt; const k = s.t / 1.2; if (k >= 1) { s.m.visible = false; return; } s.m.scale.setScalar(.07 + .38 * k); s.m.material.opacity = (1 - k) * .9; s.m.lookAt(camera.position); });
   streaks.material.uniforms.uTime.value = animT; streaks.material.uniforms.uBoost.value = boost;
   dust.rotation.y = animT * .004; dust.rotation.x = animT * .002;
-  // 鼠标停着不动时也复核一次命中：星星在公转，指针下的那颗要跟着对得上
-  if (mouse.x >= 0 && !drag) {
-    const i = pickAt(mouse.x, mouse.y, hover);
-    if (i !== hover) { hover = i; cv.classList.toggle('hov', i >= 0); if (i >= 0) showTip(i); else tip.hidden = true; }
-  }
   // 轨道时钟 + 每颗记忆星的位置 / 亮度
   if (SC.uni) SC.uni.uOrbit.value = sceneT;
   for (let g = 1; g < SC.n; g++) {
@@ -1181,7 +1200,9 @@ function frame(now){
   // 悬停 = 截停：先定下这一轮截住了谁
   const heldNow = (hover >= 0 && hover < SC.n) ? hover : -1;
   if (heldNow !== SC.held) {
+    const prev = SC.held;
     SC.held = heldNow;
+    if (prev >= 0 && prev < SC.n) reanchorPhase(prev);   // 放开：从钉住的地方接着转，不跳位
     if (heldNow >= 0 && heldNow < SC.n) {
       // 把被悬停这颗星此刻的轨道角记下来：它就此钉住，其余星星照常绕恒星转
       const m = SC.mem[heldNow - 1];
@@ -1239,25 +1260,26 @@ function layout(){
 /* ---------- 交互 ---------- */
 const v3 = glOK ? new THREE.Vector3() : null;
 function screenOf(p){ v3.copy(p).applyMatrix4(spin.matrixWorld).project(camera); return [(v3.x + 1) / 2 * W, (1 - v3.y) / 2 * H]; }
-/* 一颗星在屏幕上的可见半径（像素）：和它画出来的星芒一样大，点哪儿中哪儿 */
+/* 一颗星在屏幕上的「亮核」半径（像素）：只认最亮的那一小团，
+   光晕的外圈不算命中 —— 否则鼠标离着半格远也会亮起来 */
 function starScreenRadius(i){
-  if (i <= 0) return 30;                                   // 恒星本体
-  const m = SC.mem[i - 1]; if (!m) return 14;
+  if (i <= 0) return 22;                                   // 恒星的核心那团亮光
+  const m = SC.mem[i - 1]; if (!m) return 8;
   const br = clamp(AF[2 * i] || 0, 0, 1.2);
   const sc = (0.052 + (m.importance || 0) * 0.045) * (0.8 + br * 0.55) * (1 + m.fade * 0.6);
   const t = Math.tan(camera.fov * Math.PI / 360);
   const px = H / (2 * t * Math.max(.01, fitD));             // 每个世界单位多少像素
-  return clamp(sc * px * 0.62, 13, 42);
+  return clamp(sc * px * 0.30, 6, 15);
 }
 function pickAt(x, y, keep){
   if (!glOK) return -1;
-  let hit = -1, hitD = 1e9, near = -1, nd = 22 * 22;
+  let hit = -1, hitD = 1e9, near = -1, nd = 8 * 8;
   for (let i = 0; i < SC.n; i++) {
     const p = starPos(i, _sp), s = screenOf(p);
     const d = Math.hypot(s[0] - x, s[1] - y), r = starScreenRadius(i);
-    if (i === keep && d <= r * 1.3) return i;                // 已经悬停的那颗：留一点惯性，别来回跳
-    if (d <= r && d < hitD) { hitD = d; hit = i; }           // 指针落在星芒画面里
-    if (d < nd) { nd = d; near = i; }                       // 差一点没点上时的兜底
+    if (i === keep && d <= r * 1.15) return i;               // 已经悬停的那颗：只留两三个像素的余量
+    if (d <= r && d < hitD) { hitD = d; hit = i; }           // 指针落在亮核上
+    if (d < nd) { nd = d; near = i; }                       // 差一点点时的兜底
   }
   return hit >= 0 ? hit : near;
 }
@@ -1485,6 +1507,12 @@ host.__nr = {ff(sec){ for (let t = 0; t < sec; t += .05) { simStep(.05); decay(.
               starScreen(){ return SC.mem.map((m, i) => { const g = i + 1, q = starPos(g, _sp);
                               const p = screenOf(new THREE.Vector3(q.x, q.y, q.z));
                               return {id: m.id, x: p[0], y: p[1], fade: m.fade, status: m.status, scope: m.scope}; }); },
+              pickAt(x, y){ return pickAt(x, y, hover); },
+              hoverState(){ return {hover: hover, held: SC.held, holdAng: SC.holdAng, sceneT: sceneT, n: SC.n,
+                                    oph1: SC.oph ? SC.oph[1] : null, osp1: SC.osp ? SC.osp[1] : null,
+                                    spinZ: spinZ, camT: camT, camPos: [cam.pos.x, cam.pos.y, cam.pos.z],
+                                    camWant: [cam.want.x, cam.want.y, cam.want.z], fitD: fitD,
+                                    fade1: SC.mem[0] ? SC.mem[0].fade : null}; },
               marks(){ if (!glOK) return null; const b = screenOf(CL[0]), h = screenOf(SC.holePos || CL[0]);
                        return {bot: {x: b[0], y: b[1]}, hole: {x: h[0], y: h[1]}, groups: SC.n, mems: SC.mem.length, absorbed: SC.absorbed,
                                holeWorld: [HOLE.x, HOLE.y, HOLE.z], cam: {yaw: cam.yaw, pitch: cam.pitch, zoom: cam.zoom},
