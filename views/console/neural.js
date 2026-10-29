@@ -1136,6 +1136,11 @@ function updateScene(dt){
   scans.forEach(s => { if (!s.m.visible) return; s.t += dt; const k = s.t / 1.2; if (k >= 1) { s.m.visible = false; return; } s.m.scale.setScalar(.07 + .38 * k); s.m.material.opacity = (1 - k) * .9; s.m.lookAt(camera.position); });
   streaks.material.uniforms.uTime.value = animT; streaks.material.uniforms.uBoost.value = boost;
   dust.rotation.y = animT * .004; dust.rotation.x = animT * .002;
+  // 鼠标停着不动时也复核一次命中：星星在公转，指针下的那颗要跟着对得上
+  if (mouse.x >= 0 && !drag) {
+    const i = pickAt(mouse.x, mouse.y, hover);
+    if (i !== hover) { hover = i; cv.classList.toggle('hov', i >= 0); if (i >= 0) showTip(i); else tip.hidden = true; }
+  }
   // 轨道时钟 + 每颗记忆星的位置 / 亮度
   if (SC.uni) SC.uni.uOrbit.value = sceneT;
   for (let g = 1; g < SC.n; g++) {
@@ -1234,12 +1239,27 @@ function layout(){
 /* ---------- 交互 ---------- */
 const v3 = glOK ? new THREE.Vector3() : null;
 function screenOf(p){ v3.copy(p).applyMatrix4(spin.matrixWorld).project(camera); return [(v3.x + 1) / 2 * W, (1 - v3.y) / 2 * H]; }
-function pickAt(x, y){
+/* 一颗星在屏幕上的可见半径（像素）：和它画出来的星芒一样大，点哪儿中哪儿 */
+function starScreenRadius(i){
+  if (i <= 0) return 30;                                   // 恒星本体
+  const m = SC.mem[i - 1]; if (!m) return 14;
+  const br = clamp(AF[2 * i] || 0, 0, 1.2);
+  const sc = (0.052 + (m.importance || 0) * 0.045) * (0.8 + br * 0.55) * (1 + m.fade * 0.6);
+  const t = Math.tan(camera.fov * Math.PI / 360);
+  const px = H / (2 * t * Math.max(.01, fitD));             // 每个世界单位多少像素
+  return clamp(sc * px * 0.62, 13, 42);
+}
+function pickAt(x, y, keep){
   if (!glOK) return -1;
-  let best = -1, bd = 46 * 46;
-  const test = (i, p) => { const [sx, sy] = screenOf(p); const d = (sx - x) ** 2 + (sy - y) ** 2; if (d < bd) { bd = d; best = i; } };
-  for (let i = 0; i < SC.n; i++) test(i, starPos(i, _sp));
-  return best;
+  let hit = -1, hitD = 1e9, near = -1, nd = 22 * 22;
+  for (let i = 0; i < SC.n; i++) {
+    const p = starPos(i, _sp), s = screenOf(p);
+    const d = Math.hypot(s[0] - x, s[1] - y), r = starScreenRadius(i);
+    if (i === keep && d <= r * 1.3) return i;                // 已经悬停的那颗：留一点惯性，别来回跳
+    if (d <= r && d < hitD) { hitD = d; hit = i; }           // 指针落在星芒画面里
+    if (d < nd) { nd = d; near = i; }                       // 差一点没点上时的兜底
+  }
+  return hit >= 0 ? hit : near;
 }
 function showTip(i){
   if (i <= 0) {
@@ -1261,11 +1281,13 @@ function showTip(i){
   tip.hidden = false;
   const [sx, sy] = screenOf(starPos(i, _sp));
   const tw = tip.offsetWidth, th = tip.offsetHeight;
-  let x = sx + 18, y = sy - th / 2;
-  if (x + tw > W - 12) x = sx - tw - 18;
+  const rr = starScreenRadius(i);
+  let x = sx + rr + 12, y = sy - th / 2;
+  if (x + tw > W - 12) x = sx - rr - tw - 12;
   tip.style.left = clamp(x, 8, W - tw - 8) + 'px'; tip.style.top = clamp(y, 8, H - th - 8) + 'px';
 }
 let drag = null;
+const mouse = {x: -1, y: -1};
 cv.addEventListener('pointerdown', e => { drag = {x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, moved: false}; try { cv.setPointerCapture(e.pointerId); } catch (_) {} });
 cv.addEventListener('pointermove', e => {
   const r = host.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
@@ -1275,14 +1297,17 @@ cv.addEventListener('pointermove', e => {
     if (drag.moved && glOK) { cam.yaw -= dx * .005; cam.pitch += dy * .004; cam.userT = 6; needsT = .5; tip.hidden = true; hover = -1; }
     return;
   }
-  const i = pickAt(x, y);
+  mouse.x = x; mouse.y = y;
+  const i = pickAt(x, y, hover);
   hover = i; cv.classList.toggle('hov', i >= 0);
   if (i >= 0) showTip(i); else tip.hidden = true;
 });
+cv.addEventListener('pointerleave', () => { mouse.x = -1; mouse.y = -1; });
 cv.addEventListener('pointerup', e => {
   const wasDrag = drag && drag.moved; drag = null; cv.classList.remove('drag');
   if (wasDrag) return;
   const r = host.getBoundingClientRect(), i = pickAt(e.clientX - r.left, e.clientY - r.top);
+  mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top;
   focus = (i >= 0 && i < SC.n && focus !== i) ? i : -1;
   needsT = 1.5;
   if (i > 0 && SC.mem[i - 1] && host.__nr && host.__nr.openDetail) host.__nr.openDetail(SC.mem[i - 1].id);
