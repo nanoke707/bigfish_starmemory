@@ -79,11 +79,15 @@ AG[13] = {k: 'MAINT', zh: '维护', role: '半衰期扫描 · 变暗归档', tag
 const PROOF = 12, CRAWLER = 13, NCL = 13;               // 0 中枢 / 1..11 星域 / 12 遗忘站 / 13 维护探针
 /* ===== 3D 场景层：0 = 恒星(bot 本体)，1..M = 一条条记忆，M+1 = 黑洞 ===== */
 const MAXMEM = 22;                                   // 屏幕上同时存在的记忆星（记忆慢慢攒，不用多）
-const HOLE = {x: -1.36, y: -.78, z: .18, r: .165};      // 黑洞停在恒星左前方不远处
+const HOLE = {r: .052};                              // 视界半径：按视口短边比例画 → 与分辨率无关
+const HOLE_ANCHOR = {x: .80, y: .74};                 // 视界钉在屏幕的哪个位置（0~1，左上为原点）：右下角，避开「配置」按钮与署名
+const HOLE_TWIST = 1.25;                              // 记忆星被吸入时的旋进角（弧度）：绕着视界转进去，走弧线不是直线
+const HOLE_DEPTH = 1.15;                             // 视界在深度上离星团有多远（相对相机到星团的距离）
 const AFG = 80;                                      // 着色器里 af[] 的组数上限
 const LINK_SEG = 10;                                  // 关联连线每一段的细分
-const SC = {n: 1, mem: [], col: [], pull: new Float32Array(AFG), bunBase: 2, held: -1, holdAng: 0, absorbed: 0, gone: []};
+const SC = {n: 1, mem: [], col: [], pull: new Float32Array(AFG), bunBase: 2, held: -1, holdAng: 0, absorbed: 0, gone: [], suckMap: {}};
 let GBG = 1;                                         // 背景灰质所在的组号
+let HOLE_L = null;                                   // 视界在 spin 局部坐标里的位置（每帧按屏幕锚点重算）
 
 // 记忆类型 = 工作流：决定这颗星归属哪个星域、最终落到哪个状态环
 const TYPE_ZH = {fact: '事实', event: '经历', preference: '偏好', promise: '约定',
@@ -364,13 +368,11 @@ const BRAIN_VS_L = `
 attribute vec3 col; attribute float grp; attribute float shade;
 attribute vec3 gc; attribute float pull; attribute float osp; attribute float oph; attribute vec3 axs;
 uniform vec2 af[80]; uniform float uMono; uniform float uFade; uniform float uGain; uniform vec3 uHole;
-uniform float uOrbit; uniform float uHold; uniform float uHoldAng;
+uniform float uOrbit; uniform float uHold; uniform float uHoldAng; uniform float uTwist;
 varying vec3 vCol; varying float vA;
 void main(){
-  // 记忆越暗 = 被黑洞吸得越近：先向自己的中心收拢，再被拖向视界
   vec3 p = position;
   p = mix(p, gc, pull * .5);
-  p = mix(p, uHole, pull * pull * .95);
   // 绕着恒星公转：每颗星有自己的轨道平面 axs，所以是三百六十度地绕；
   // 被悬停的那颗用冻结角 uHoldAng 钉住，其余照转；被吸得越狠转得越慢
   float ang = (abs(grp - uHold) < .5 && osp > 0.0) ? uHoldAng : (uOrbit * osp + oph) * (1.0 - pull);
@@ -379,6 +381,14 @@ void main(){
   float kd = dot(k, p);
   vec3 kc = cross(k, p);
   p = p * ca + kc * sa + k * kd * (1.0 - ca);
+  // 被视界卷走：绕着视界旋进的螺旋（半径一点点收紧）——走弧线不是直线，也不会一下子消失
+  if (pull > 0.0) {
+    vec3 rel = p - uHole;
+    float ph = uTwist * pull;
+    float cs = cos(ph), sn = sin(ph);
+    vec3 rot = vec3(rel.x * cs - rel.y * sn, rel.x * sn + rel.y * cs, rel.z);
+    p = uHole + rot * (1.0 - pull);
+  }
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   vec2 q = af[int(grp + 0.5)];
   float a = clamp(q.x, 0.0, 1.5);
@@ -397,12 +407,11 @@ const BRAIN_VS_P = `
 attribute vec3 col; attribute float grp; attribute float sz; attribute float ph;
 attribute vec3 gc; attribute float pull; attribute float osp; attribute float oph; attribute vec3 axs;
 uniform vec2 af[80]; uniform float uMono; uniform float uTime; uniform float uPx; uniform float uFade; uniform float uGain;
-uniform vec3 uHole; uniform float uHold; uniform float uHoldT; uniform float uOrbit; uniform float uHoldAng;
+uniform vec3 uHole; uniform float uHold; uniform float uHoldT; uniform float uOrbit; uniform float uHoldAng; uniform float uTwist;
 varying vec3 vCol; varying float vA;
 void main(){
   vec3 p = position;
   p = mix(p, gc, pull * .5);
-  p = mix(p, uHole, pull * pull * .95);
   // 三维公转（每颗星自己的轨道平面）
   float ang = (abs(grp - uHold) < .5 && osp > 0.0) ? uHoldAng : (uOrbit * osp + oph) * (1.0 - pull);
   vec3 k = normalize(axs);
@@ -410,6 +419,14 @@ void main(){
   float kd = dot(k, p);
   vec3 kc = cross(k, p);
   p = p * ca + kc * sa + k * kd * (1.0 - ca);
+  // 被视界卷走：绕着视界旋进的螺旋（半径一点点收紧）——走弧线不是直线，也不会一下子消失
+  if (pull > 0.0) {
+    vec3 rel = p - uHole;
+    float ph = uTwist * pull;
+    float cs = cos(ph), sn = sin(ph);
+    vec3 rot = vec3(rel.x * cs - rel.y * sn, rel.x * sn + rel.y * cs, rel.z);
+    p = uHole + rot * (1.0 - pull);
+  }
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   vec2 q = af[int(grp + 0.5)];
   float a = clamp(q.x, 0.0, 1.5);
@@ -582,8 +599,8 @@ function buildBrain(){
   SC.pullL = new Float32Array(LP.length / 3);
   lg.setAttribute('pull', new THREE.BufferAttribute(SC.pullL, 1).setUsage(THREE.DynamicDrawUsage));
   const uni = {af: {value: AF}, uMono: {value: 0}, uFade: {value: 8}, uTime: {value: 0}, uPx: {value: 800}, uGain: {value: 1},
-               uHole: {value: new THREE.Vector3(HOLE.x, HOLE.y, HOLE.z)}, uHold: {value: -1}, uHoldT: {value: 0},
-               uOrbit: {value: 0}, uHoldAng: {value: 0},
+               uHole: {value: HOLE_L || (HOLE_L = new THREE.Vector3())}, uHold: {value: -1}, uHoldT: {value: 0},
+               uOrbit: {value: 0}, uHoldAng: {value: 0}, uTwist: {value: HOLE_TWIST},
                map: {value: SPRITE}};
   SC.uni = uni;
   SC.lines = new THREE.LineSegments(lg, new THREE.ShaderMaterial({uniforms: uni, vertexShader: BRAIN_VS_L, fragmentShader: BRAIN_FS_L, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending}));
@@ -645,6 +662,22 @@ function buildBrain(){
   }
 
   probe.p = new V(CL[0].x, CL[0].y, CL[0].z + .12); probe.a = probe.p.clone(); probe.b = probe.p.clone(); probe.c = probe.p.clone();
+  applyPull();
+}
+/* 把每颗记忆星当前的吸入进度写进顶点属性（重建后必须复原，不然会跳回原位） */
+function applyPull(){
+  if (!SC.pullP || !SC.mem) return;
+  for (let g = 1; g < SC.n; g++) {
+    const m = SC.mem[g - 1]; if (!m) continue;
+    const v = clamp(m.suck || 0, 0, 1);
+    SC.pull[g] = v;
+    const mm = MEM[g] || [];
+    for (const i of mm) SC.pullP[i] = v;
+    const li = SC.pullIdxL[g] || [];
+    for (const k of li) SC.pullL[k] = v;
+  }
+  if (SC.pts) SC.pts.geometry.attributes.pull.needsUpdate = true;
+  if (SC.lines) SC.lines.geometry.attributes.pull.needsUpdate = true;
 }
 
 /* ---------- 黑洞：事件视界（移植 agent-display「06 · 视界熔炉」） ---------- */
@@ -666,17 +699,62 @@ void main(){
   float s1 = 0.5 + 0.5 * sin(ang * 9.0 + r * 13.0 - uTime * 1.2);
   float s2 = 0.5 + 0.5 * sin(ang * 17.0 - r * 21.0 + uTime * 0.8 + 1.7);
   float band = exp(-sq((r - 1.28) / 0.34));
-  float acc = band * (s1 * 0.6 + s2 * 0.4) * 0.11 * (0.6 + uEnergy);
+  // 吸积：物质沿对数螺旋一圈圈被卷进视界（越靠里转得越快）
+  float lsp = ang * 2.0 - log(max(r, 0.05)) * 1.45 - uTime * 0.55;
+  float sp1 = 0.5 + 0.5 * sin(lsp);
+  float sp2 = 0.5 + 0.5 * sin(lsp * 2.0 + 1.7);
+  float spiral = sp1 * 0.62 + sp2 * 0.38;
+  float acc = band * (s1 * 0.42 + s2 * 0.26 + spiral * 0.44) * 0.11 * (0.6 + uEnergy);
+  // 引力透镜：视界外一圈被弯折的光弧
+  float lens = exp(-sq((r - 1.42) / 0.10)) * (0.35 + 0.9 * spiral) * 0.085 * (0.5 + uEnergy);
+  float inf = exp(-sq((r - 2.15) / 1.05)) * spiral * 0.055 * (0.45 + uEnergy * 0.9);
   float ring = exp(-sq((r - 1.0) / 0.02)) * (0.45 + 0.95 * beam) * (0.85 + uEnergy * 0.6);
   float ring2 = exp(-sq((r - 1.05) / 0.07)) * 0.22 * (0.4 + beam);
   float halo = exp(-sq((r - 1.62) / 0.045)) * 0.05;
   float pr = 1.0 + uPulse * 3.6;
   float shock = uPulse > 0.0 ? exp(-sq((r - pr) / (0.05 + uPulse * 0.12))) * (1.0 - uPulse) * 0.55 : 0.0;
-  vec3 col = tint * (glow * (0.6 + 0.6 * beam) + acc + ring + ring2 + halo + shock);
+  vec3 col = tint * (glow * (0.6 + 0.6 * beam) + acc + lens + inf + ring + ring2 + halo + shock);
   float disc = 1.0 - smoothstep(0.985, 1.0, r);
-  vec3 dcol = vec3(0.004, 0.005, 0.008) + tint * 0.035 * smoothstep(0.55, 1.0, r) * beam;
+  vec3 dcol = vec3(0.004, 0.005, 0.008) + tint * 0.014 * smoothstep(0.55, 1.0, r) * beam;
   gl_FragColor = vec4(col * (1.0 - disc) + dcol * disc, disc) * uAlpha;
 }`;
+/* ---------- 吸积：黑洞四周被一点点卷进去的物质（屏幕空间，和视界严丝合缝） ---------- */
+const ACCP_VS = `
+attribute float aSeed; attribute float aArm; attribute float aSpd; attribute float aR0;
+attribute float aIn; attribute float aSz; attribute float aLay; attribute float aTip;
+uniform vec2 uCtr; uniform vec2 uRes; uniform float uR; uniform float uTime;
+uniform float uGain; uniform float uSpd; uniform float uHeat; uniform float uPS;
+varying vec3 vCol; varying float vA;
+void main(){
+  float s = fract(aSeed + uTime * aIn);                  // 一生：0 从远处来 → 1 被视界吞掉
+  float st = max(s - 0.055, 0.0);                        // 尾巴比头落后一点（拖在后面）
+  float rH = mix(aR0, 1.02, pow(s, 1.3));                // 一路被吸向视界，越近掉得越快
+  float rT = mix(aR0, 1.02, pow(st, 1.3));
+  float k = 2.15;
+  // 旋臂：角度由「自己的相位 + 所在半径」决定 → 一条条旋进气流的螺线；
+  // 差速只作用在这一项里（否则时间一长旋臂就被绞成均匀的环），另加一点整体转动
+  float aH = aArm + uTime * uSpd * 0.22 + s * uSpd * aSpd * (k / max(rH, 0.25)) * 0.7;
+  float aT = aArm + uTime * uSpd * 0.22 + st * uSpd * aSpd * (k / max(rT, 0.25)) * 0.7;
+  vec2 oH = vec2(cos(aH), sin(aH)) * rH * uR;
+  vec2 oT = vec2(cos(aT), sin(aT)) * rT * uR;
+  vec2 o = mix(oH, oT, aTip);
+  vec2 p = uCtr + o;
+  gl_Position = vec4(p.x / uRes.x * 2.0 - 1.0, 1.0 - p.y / uRes.y * 2.0, 0.0, 1.0);
+  float fade = smoothstep(0.0, 0.07, s) * (1.0 - smoothstep(0.86, 1.0, s));
+  float heat = 1.0 - clamp((rH - 1.0) / 2.6, 0.0, 1.0);
+  vec3 cold = vec3(0.30, 0.56, 1.0);
+  vec3 hot = vec3(1.0, 0.80, 0.52);
+  vCol = mix(cold, hot, heat * heat);
+  vA = fade * uGain * (0.22 + 0.78 * heat) * (1.0 - aTip * 0.70) * (0.40 + 0.60 * aLay);
+  gl_PointSize = max(1.0, aSz * uPS * (0.55 + 0.65 * heat));
+}`;
+const ACCP_FS = `
+uniform sampler2D map; varying vec3 vCol; varying float vA;
+void main(){ vec4 t = texture2D(map, gl_PointCoord); gl_FragColor = vec4(vCol, t.a * vA); }`;
+const ACCL_FS = `
+varying vec3 vCol; varying float vA;
+void main(){ gl_FragColor = vec4(vCol, vA); }`;
+
 /* 星：核心 + 四角衍射星芒 */
 let STAR_TEX = null;
 function starTex(){
@@ -708,22 +786,23 @@ function starTex(){
   STAR_TEX = new THREE.CanvasTexture(c);
   return STAR_TEX;
 }
-/* 黑洞是屏幕空间的：把它的中心/半径换算到当前渲染分辨率上 */
+/* 黑洞是屏幕空间的：视界钉死在屏幕锚点上，半径按视口短边算 → 跟相机、星团公转都无关 */
 function syncHole(rw, rh){
   if (!SC.holeUni) return;
-  const u = SC.holeUni, hp = SC.holePos || CL[0];
-  const [hx, hy] = screenOf(hp);
-  const t = Math.tan(camera.fov * Math.PI / 360);
-  const pxPer = rh / (2 * t * Math.max(.01, fitD));
-  const R = HOLE.r * pxPer;
+  const u = SC.holeUni;
+  const R = HOLE.r * Math.min(rw, rh);
   u.uRes.value.set(rw, rh);
-  u.uCtr.value.set(hx * rw / Math.max(1, W), hy * rh / Math.max(1, H));
+  u.uCtr.value.set(HOLE_ANCHOR.x * rw, HOLE_ANCHOR.y * rh);
   u.uR.value = R;
   u.uHalf.value = R * 6;
   u.uTime.value = animT;
   u.uEnergy.value = clamp(.35 + SC.absorbed * .05 + boost * .35, 0, 1.4);
   u.uWarm.value = clamp(.22 + SC.absorbed * .04, 0, 1);
   u.uPulse.value = SC.holePulse || 0;
+  if (SC.accUni) {
+    SC.accUni.uGain.value = clamp(.62 + SC.absorbed * .03 + boost * .25, 0, 1.6);
+    SC.accUni.uPS.value = clamp(rh / 900, .6, 2.2);
+  }
 }
 function buildHole(){
   const g = new THREE.BufferGeometry();
@@ -739,8 +818,74 @@ function buildHole(){
   SC.hole.frustumCulled = false;
   SC.hole.renderOrder = 900;
   scene.add(SC.hole);
-  SC.holePos = new THREE.Vector3(HOLE.x, HOLE.y, HOLE.z);
+  SC.holePos = new THREE.Vector3(0, 0, 0);      // 视界在世界坐标里的位置（每帧按屏幕锚点重算）
   SC.holePulse = 0;
+}
+/* 吸积：黑洞四周一点点被卷进去的物质（屏幕空间，和视界严丝合缝）
+   —— 比视界先画（renderOrder < 900），否则会把视界暗盘糊掉 */
+function buildAccretion(){
+  if (!SC.holeUni) return;
+  const N = 900;
+  const mk = n => {
+    const g = new THREE.BufferGeometry();
+    return {g, pos: new Float32Array(n * 3), seed: new Float32Array(n), arm: new Float32Array(n), spd: new Float32Array(n),
+            r0: new Float32Array(n), inr: new Float32Array(n), sz: new Float32Array(n), lay: new Float32Array(n), tip: new Float32Array(n)};
+  };
+  const fill = a => {
+    a.g.setAttribute('position', new THREE.BufferAttribute(a.pos, 3));
+    a.g.setAttribute('aSeed', new THREE.BufferAttribute(a.seed, 1));
+    a.g.setAttribute('aArm', new THREE.BufferAttribute(a.arm, 1));
+    a.g.setAttribute('aSpd', new THREE.BufferAttribute(a.spd, 1));
+    a.g.setAttribute('aR0', new THREE.BufferAttribute(a.r0, 1));
+    a.g.setAttribute('aIn', new THREE.BufferAttribute(a.inr, 1));
+    a.g.setAttribute('aSz', new THREE.BufferAttribute(a.sz, 1));
+    a.g.setAttribute('aLay', new THREE.BufferAttribute(a.lay, 1));
+    a.g.setAttribute('aTip', new THREE.BufferAttribute(a.tip, 1));
+  };
+  const pts = mk(N), lns = mk(N * 2);
+  const ARMS = 4, ASTEP = TAU / ARMS;
+  for (let i = 0; i < N; i++) {
+    // 每颗物质都属于一条旋臂：同臂的角度几乎一致，臂内的相位不同 → 拉出一条条旋进的气流
+    const arm = (i % ARMS) + (Math.random() - .5) * .22;
+    const sd = Math.random(), am = arm * ASTEP, sp = .85 + Math.random() * .3,
+          rr = 1.55 + Math.random() * 1.5, ii = .05 + Math.random() * .11,
+          ss = .9 + Math.random() * 2.6, ly = Math.random();
+    pts.seed[i] = sd; pts.arm[i] = am; pts.spd[i] = sp; pts.r0[i] = rr;
+    pts.inr[i] = ii; pts.sz[i] = ss; pts.lay[i] = ly; pts.tip[i] = 0;
+    // 拖尾：同一颗粒子的头（aTip=0）和尾（aTip=1），拉出一条甩在后面的流线
+    const j = i * 2;
+    lns.seed[j] = sd; lns.arm[j] = am; lns.spd[j] = sp; lns.r0[j] = rr;
+    lns.inr[j] = ii; lns.sz[j] = ss; lns.lay[j] = ly; lns.tip[j] = 0;
+    lns.seed[j + 1] = sd; lns.arm[j + 1] = am; lns.spd[j + 1] = sp; lns.r0[j + 1] = rr;
+    lns.inr[j + 1] = ii; lns.sz[j + 1] = ss; lns.lay[j + 1] = ly; lns.tip[j + 1] = 1;
+  }
+  fill(pts); fill(lns);
+  // 视界的 uCtr/uRes/uR 直接共用 → 吸积盘永远严丝合缝地贴着视界
+  SC.accUni = {uCtr: SC.holeUni.uCtr, uRes: SC.holeUni.uRes, uR: SC.holeUni.uR, uTime: SC.holeUni.uTime,
+               uGain: {value: .7}, uSpd: {value: .95}, uHeat: {value: .3}, uPS: {value: 1}};
+  const pm = new THREE.ShaderMaterial({uniforms: Object.assign({map: {value: SPRITE}}, SC.accUni),
+    vertexShader: ACCP_VS, fragmentShader: ACCP_FS, transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending});
+  SC.accPts = new THREE.Points(pts.g, pm);
+  SC.accPts.frustumCulled = false; SC.accPts.renderOrder = 850; scene.add(SC.accPts);
+  const lm = new THREE.ShaderMaterial({uniforms: SC.accUni, vertexShader: ACCP_VS, fragmentShader: ACCL_FS,
+    transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending});
+  SC.accLine = new THREE.LineSegments(lns.g, lm);
+  SC.accLine.frustumCulled = false; SC.accLine.renderOrder = 840; scene.add(SC.accLine);
+}
+/* 视界钉在屏幕上：把屏幕锚点反算成 3D 世界点，再换算到 spin 局部坐标（记忆星被卷向这里） */
+let _hv3 = null;
+function syncHoleTarget(){
+  if (!glOK || !HOLE_L) return;
+  if (!_hv3) _hv3 = new THREE.Vector3();
+  const nx = HOLE_ANCHOR.x * 2 - 1, ny = 1 - HOLE_ANCHOR.y * 2;
+  camera.updateMatrixWorld();
+  _hv3.set(nx, ny, .5).unproject(camera);
+  _hv3.sub(camera.position).normalize();
+  _hv3.multiplyScalar(Math.max(1, fitD) * HOLE_DEPTH).add(camera.position);
+  if (SC.holePos) SC.holePos.copy(_hv3);
+  // 世界 → spin 局部（spin 只绕 z 轴转 θ）
+  const th = spinZ * .035, cs = Math.cos(th), sn = Math.sin(th);
+  HOLE_L.set(_hv3.x * cs + _hv3.y * sn, -_hv3.x * sn + _hv3.y * cs, _hv3.z);
 }
 
 const RW = 4096, RH = 112, TW = 4096, TH = 32;
@@ -791,6 +936,7 @@ try {
   spin = new THREE.Group(); world.add(spin);
   buildBrain();
   buildHole();
+  buildAccretion();
   buildHud();
   buildSky();
   if (THREE.EffectComposer && THREE.UnrealBloomPass && THREE.RenderPass) {
@@ -953,18 +1099,17 @@ function buildLinks(){
   SC.links = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({vertexColors: true, transparent: true, opacity: .55, blending: THREE.AdditiveBlending, depthWrite: false}));
   spin.add(SC.links);
 }
-/* 某颗记忆星此刻在世界里的位置（与着色器公式一致：先被黑洞拖，再绕轨道转） */
+/* 某颗记忆星此刻在 spin 局部坐标里的位置（与着色器公式逐字一致：先公转，再绕着视界旋进去） */
 const _sp = {x: 0, y: 0, z: 0}, _l1 = {x: 0, y: 0, z: 0}, _l2 = {x: 0, y: 0, z: 0};
 function starPos(g, o){
   const c = CL[g] || CL[0];
   const m = g > 0 ? SC.mem[g - 1] : null;
-  const pull = m ? clamp(m.fade, 0, 1) : 0;
+  const pull = m ? clamp(m.suck, 0, 1) : 0;
   let x = c.x, y = c.y, z = c.z;
-  const pw = pull * pull * .95;
-  x += (HOLE.x - x) * pw; y += (HOLE.y - y) * pw; z += (HOLE.z - z) * pw;
   const ax = SC.oax && SC.oax[g];
   if (ax) {
-    const ang = (g === SC.held ? SC.holdAng : (sceneT * (SC.osp[g] || 0) + (SC.oph ? SC.oph[g] : 0))) * (1 - pull);
+    const osp = SC.osp[g] || 0, oph = SC.oph ? (SC.oph[g] || 0) : 0;
+    const ang = (g === SC.held && osp > 0) ? SC.holdAng : (sceneT * osp + oph) * (1 - pull);
     const ca = Math.cos(ang), sa = Math.sin(ang);
     const kd = ax.x * x + ax.y * y + ax.z * z;
     const cx = ax.y * z - ax.z * y, cy = ax.z * x - ax.x * z, cz = ax.x * y - ax.y * x;
@@ -973,6 +1118,13 @@ function starPos(g, o){
     const nz = z * ca + cz * sa + ax.z * kd * (1 - ca);
     x = nx; y = ny; z = nz;
   }
+  // 被视界卷走：绕着视界旋进的螺旋（和着色器里的写法一字不差）
+  if (pull > 0 && HOLE_L) {
+    const rx = x - HOLE_L.x, ry = y - HOLE_L.y, rz = z - HOLE_L.z;
+    const ph = HOLE_TWIST * pull, cs = Math.cos(ph), sn = Math.sin(ph);
+    const ox = rx * cs - ry * sn, oy = rx * sn + ry * cs;
+    x = HOLE_L.x + ox * (1 - pull); y = HOLE_L.y + oy * (1 - pull); z = HOLE_L.z + rz * (1 - pull);
+  }
   o.x = x; o.y = y; o.z = z;
   return o;
 }
@@ -980,7 +1132,7 @@ function starPos(g, o){
 function reanchorPhase(g){
   if (!(g > 0) || g >= SC.n || !SC.oph) return;
   const sp = SC.osp[g] || 0, m = SC.mem[g - 1];
-  const pull = m ? clamp(m.fade, 0, 1) : 0, k = 1 - pull;
+  const pull = m ? clamp(m.suck, 0, 1) : 0, k = 1 - pull;
   const base = k > 1e-3 ? SC.holdAng / k : SC.holdAng;
   const ph = base - sceneT * sp;
   SC.oph[g] = ph;
@@ -1124,25 +1276,29 @@ function updateScene(dt){
     }
     AF[g * 2 + 1] += (tgt - AF[g * 2 + 1]) * (1 - Math.exp(-dt * 4));
   }
-  // 引力：fade 越大越被黑洞拖过去；被吞掉就消失
+  // 引力：变暗/归档的记忆开始被视界卷走 —— 慢速推进，全程看得见它绕着视界转进去
   let pullDirty = false;
   for (let g = 1; g < SC.n; g++) {
     const m = SC.mem[g - 1]; if (!m) continue;
-    if (m.status === 'faded' || m.status === 'archived') m.target = Math.min(1, m.target + dt * (m.status === 'archived' ? .008 : .011));
-    m.fade += (m.target - m.fade) * Math.min(1, dt * .35);
-    if (m.fade >= .985 && m.target > .9) {
+    if (m.status === 'faded' || m.status === 'archived') {
+      m.target = Math.min(1, m.target + dt * (m.status === 'archived' ? .006 : .008));
+      m.fade += (m.target - m.fade) * Math.min(1, dt * .35);
+      m.suck = Math.min(1, (m.suck || 0) + dt * (m.status === 'archived' ? 1 / 46 : 1 / 68));
+      SC.suckMap[m.id] = m.suck;
+    }
+    if (m.suck >= .999) {
       m.dead = true; SC.absorbed++; SC.gone[m.id] = 1; SC.holePulse = 1;
       log(0, '消散', `#${m.id} ${starLabel(m)} → 黑洞`, 'bad');
       SC.mem.splice(g - 1, 1); SC.col.splice(g, 1);
       buildBrain(); pullDirty = true; g--;
       continue;
     }
-    if (Math.abs(m.fade - (SC.pull[g] || 0)) > .002) {
-      SC.pull[g] = m.fade; pullDirty = true;
+    if (Math.abs(m.suck - (SC.pull[g] || 0)) > .002) {
+      SC.pull[g] = m.suck; pullDirty = true;
       const mm = MEM[g] || [];
-      for (const i of mm) SC.pullP[i] = m.fade;
+      for (const i of mm) SC.pullP[i] = m.suck;
       const li = SC.pullIdxL[g] || [];
-      for (const v of li) SC.pullL[v] = m.fade;
+      for (const v of li) SC.pullL[v] = m.suck;
     }
   }
   if (pullDirty && SC.pts && SC.lines) { SC.pts.geometry.attributes.pull.needsUpdate = true; SC.lines.geometry.attributes.pull.needsUpdate = true; }
@@ -1162,6 +1318,8 @@ function updateScene(dt){
   dust.rotation.y = animT * .004; dust.rotation.x = animT * .002;
   // 轨道时钟 + 每颗记忆星的位置 / 亮度
   if (SC.uni) SC.uni.uOrbit.value = sceneT;
+  // 视界钉在屏幕锚点上 → 反算出 3D 引力目标（记忆星就是卷向这里）
+  syncHoleTarget();
   for (let g = 1; g < SC.n; g++) {
     const m = SC.mem[g - 1], spr = SC.memSpr && SC.memSpr[g - 1];
     if (!m || !spr) continue;
@@ -1170,8 +1328,8 @@ function updateScene(dt){
     const br = clamp(AF[g * 2], 0, 1.2);
     const col = SC.col[g] || [1, 1, 1];
     spr.material.color.setRGB(col[0], col[1], col[2]);
-    spr.material.opacity = clamp((1 - m.fade * .92) * (.22 + br * .9), 0, 1);
-    spr.scale.setScalar((.052 + (m.importance || 0) * .045) * (.8 + br * .55) * (1 + m.fade * .6));
+    spr.material.opacity = clamp((1 - m.fade * .5 - (m.suck || 0) * .5) * (.25 + br * .9), 0, 1);
+    spr.scale.setScalar((.052 + (m.importance || 0) * .045) * (.8 + br * .55) * (1 + (m.suck || 0) * .6));
   }
   updateLinks();
   // 黑洞：事件视界（移植「视界熔炉」）
@@ -1179,12 +1337,11 @@ function updateScene(dt){
   syncHole(W * pr, H * pr);
   // 浮层：恒星的名字和黑洞的位置跟着 3D 走
   if (SC.ovl) {
-    const hp = SC.holePos || CL[0];
-    const [bx, by] = screenOf(CL[0]), [hx, hy] = screenOf(hp);
+    const [bx, by] = screenOf(CL[0]);
     SC.ovl.style.setProperty('--bx', bx.toFixed(1) + 'px');
     SC.ovl.style.setProperty('--by', by.toFixed(1) + 'px');
-    SC.ovl.style.setProperty('--hx', hx.toFixed(1) + 'px');
-    SC.ovl.style.setProperty('--hy', hy.toFixed(1) + 'px');
+    SC.ovl.style.setProperty('--hx', (HOLE_ANCHOR.x * W).toFixed(1) + 'px');
+    SC.ovl.style.setProperty('--hy', (HOLE_ANCHOR.y * H).toFixed(1) + 'px');
   }
 }
 function decay(dt){
@@ -1206,7 +1363,7 @@ function frame(now){
     if (heldNow >= 0 && heldNow < SC.n) {
       // 把被悬停这颗星此刻的轨道角记下来：它就此钉住，其余星星照常绕恒星转
       const m = SC.mem[heldNow - 1];
-      SC.holdAng = (sceneT * (SC.osp[heldNow] || 0) + (SC.oph ? SC.oph[heldNow] : 0)) * (1 - (m ? clamp(m.fade, 0, 1) : 0));
+      SC.holdAng = (sceneT * (SC.osp[heldNow] || 0) + (SC.oph ? SC.oph[heldNow] : 0)) * (1 - (m ? clamp(m.suck || 0, 0, 1) : 0));
       if (SC.uni) SC.uni.uHoldAng.value = SC.holdAng;
     }
     if (SC.uni) { SC.uni.uHold.value = heldNow; SC.uni.uHoldT.value = animT; }
@@ -1266,7 +1423,7 @@ function starScreenRadius(i){
   if (i <= 0) return 22;                                   // 恒星的核心那团亮光
   const m = SC.mem[i - 1]; if (!m) return 8;
   const br = clamp(AF[2 * i] || 0, 0, 1.2);
-  const sc = (0.052 + (m.importance || 0) * 0.045) * (0.8 + br * 0.55) * (1 + m.fade * 0.6);
+  const sc = (0.052 + (m.importance || 0) * 0.045) * (0.8 + br * 0.55) * (1 + (m.suck || 0) * 0.6);
   const t = Math.tan(camera.fov * Math.PI / 360);
   const px = H / (2 * t * Math.max(.01, fitD));             // 每个世界单位多少像素
   return clamp(sc * px * 0.30, 6, 15);
@@ -1460,7 +1617,8 @@ function setModel(m){
       pinned: !!x.pinned, halfLife: x.halfLife, recallCount: x.recallCount, reviewCount: x.reviewCount,
       reactivateCount: x.reactivateCount, daysSince: x.daysSince, eventTime: x.eventTime,
       anchor: x.anchor, tags: x.tags,
-      fade: fadeTarget(x.status, ret), target: fadeTarget(x.status, ret)
+      fade: fadeTarget(x.status, ret), target: fadeTarget(x.status, ret),
+      suck: clamp(Number(SC.suckMap[x.id]) || 0, 0, 1)      // 吸入进度：跨刷新保留，别让被卷走的星跳回原位
     };
   });
   SC.col = [hex3('#eaf6ff')];
@@ -1502,20 +1660,37 @@ if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { la
 syncButtons();
 // 调试用：快进模拟若干秒（控制台里 document.getElementById('host-neural').__nr.ff(20)）
 host.__nr = {ff(sec){ for (let t = 0; t < sec; t += .05) { simStep(.05); decay(.05); animT += .05; } needsT = 1; },
+              /* 只推进「被视界卷走」的进度，不动别的（给自动化探针用） */
+              pull(sec){ for (let t = 0; t < sec; t += .05) {
+                           for (let g = 1; g < SC.n; g++) { const m = SC.mem[g - 1]; if (!m) continue;
+                             if (m.status !== 'faded' && m.status !== 'archived') continue;
+                             m.target = Math.min(1, m.target + .05 * (m.status === 'archived' ? .006 : .008));
+                             m.fade += (m.target - m.fade) * Math.min(1, .05 * .35);
+                             m.suck = Math.min(1, (m.suck || 0) + .05 * (m.status === 'archived' ? 1 / 46 : 1 / 68));
+                             SC.suckMap[m.id] = m.suck; } }
+                         applyPull(); needsT = 1; },
+              /* 吸积盘的现状（给自动化探针用） */
+              acc(){ if (!SC.accUni) return {has: false};
+                     return {has: true, pts: SC.accPts ? SC.accPts.geometry.attributes.aSeed.count : 0,
+                             segs: SC.accLine ? SC.accLine.geometry.attributes.aSeed.count : 0,
+                             ctr: [SC.accUni.uCtr.value.x, SC.accUni.uCtr.value.y], r: SC.accUni.uR.value,
+                             gain: SC.accUni.uGain.value, order: SC.accPts ? SC.accPts.renderOrder : -1,
+                             holeOrder: SC.hole ? SC.hole.renderOrder : -1, inScene: !!SC.accPts && !!SC.accPts.parent}; },
               setModel, model: MODEL, feed, tasks, stars: starPool, ag: AG,
               /* 给自动化探针用 */
               starScreen(){ return SC.mem.map((m, i) => { const g = i + 1, q = starPos(g, _sp);
                               const p = screenOf(new THREE.Vector3(q.x, q.y, q.z));
-                              return {id: m.id, x: p[0], y: p[1], fade: m.fade, status: m.status, scope: m.scope}; }); },
+                              return {id: m.id, x: p[0], y: p[1], fade: m.fade, suck: m.suck || 0, status: m.status, scope: m.scope}; }); },
               pickAt(x, y){ return pickAt(x, y, hover); },
               hoverState(){ return {hover: hover, held: SC.held, holdAng: SC.holdAng, sceneT: sceneT, n: SC.n,
                                     oph1: SC.oph ? SC.oph[1] : null, osp1: SC.osp ? SC.osp[1] : null,
                                     spinZ: spinZ, camT: camT, camPos: [cam.pos.x, cam.pos.y, cam.pos.z],
                                     camWant: [cam.want.x, cam.want.y, cam.want.z], fitD: fitD,
-                                    fade1: SC.mem[0] ? SC.mem[0].fade : null}; },
-              marks(){ if (!glOK) return null; const b = screenOf(CL[0]), h = screenOf(SC.holePos || CL[0]);
-                       return {bot: {x: b[0], y: b[1]}, hole: {x: h[0], y: h[1]}, groups: SC.n, mems: SC.mem.length, absorbed: SC.absorbed,
-                               holeWorld: [HOLE.x, HOLE.y, HOLE.z], cam: {yaw: cam.yaw, pitch: cam.pitch, zoom: cam.zoom},
+                                    fade1: SC.mem[0] ? SC.mem[0].fade : null, suck1: SC.mem[0] ? (SC.mem[0].suck || 0) : null}; },
+              marks(){ if (!glOK) return null; const b = screenOf(CL[0]);
+                       const hx = HOLE_ANCHOR.x * W, hy = HOLE_ANCHOR.y * H;
+                       return {bot: {x: b[0], y: b[1]}, hole: {x: hx, y: hy}, groups: SC.n, mems: SC.mem.length, absorbed: SC.absorbed,
+                               holeWorld: SC.holePos ? [SC.holePos.x, SC.holePos.y, SC.holePos.z] : [0, 0, 0], cam: {yaw: cam.yaw, pitch: cam.pitch, zoom: cam.zoom},
                                 holeDbg: SC.holeUni ? {inScene: !!SC.hole.parent, vis: SC.hole.visible,
                                   ctr: [SC.holeUni.uCtr.value.x, SC.holeUni.uCtr.value.y], r: SC.holeUni.uR.value,
                                   half: SC.holeUni.uHalf.value, res: [SC.holeUni.uRes.value.x, SC.holeUni.uRes.value.y],
@@ -1530,9 +1705,8 @@ host.__nr = {ff(sec){ for (let t = 0; t < sec; t += .05) { simStep(.05); decay(.
                         let orange = 0, cyan = 0, bright = 0, sum = 0;
                         for (let i = 0; i < RW * RH; i++) { const r = buf[i*4], g = buf[i*4+1], b = buf[i*4+2], L = r+g+b; sum += L;
                           if (L > 120) bright++; if (r > 90 && r > b * 1.5 && g > b) orange++; if (g > 80 && b > 80 && r < g * .85) cyan++; }
-                        // 黑洞暗盘：视界内部应该几乎全黑
-                        const [hx, hy] = screenOf(SC.holePos || CL[0]);
-                        const cx = Math.round(hx * RW / Math.max(1, W)), cy = Math.round((1 - hy / Math.max(1, H)) * RH);
+                        // 黑洞暗盘：视界内部应该几乎全黑（视界钉在屏幕锚点上）
+                        const cx = Math.round(HOLE_ANCHOR.x * RW), cy = Math.round((1 - HOLE_ANCHOR.y) * RH);
                         let discDark = 0, discTotal = 0, ringLum = 0, ringTotal = 0;
                         for (let y = cy - 6; y <= cy + 6; y++) for (let x = cx - 6; x <= cx + 6; x++) {
                           if (x < 0 || y < 0 || x >= RW || y >= RH) continue;
