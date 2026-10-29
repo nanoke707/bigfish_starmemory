@@ -2,5 +2,5 @@ name: bigfish_starmemory
 display_name: 咸鱼星空记忆
 description: "把每段经历存成一颗有时间的星星：艾宾浩斯半衰期决定记忆遗忘，情绪有自己的独立半衰期，细节可以在同一件事里单独模糊，被想起时会重新点亮但不会凭空复原。"
 author: bigfish
-version: 0.1.2
+version: 0.1.3
 repo: https://github.com/nanoke707/bigfish_starmemory

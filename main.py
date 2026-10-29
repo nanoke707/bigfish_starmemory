@@ -44,7 +44,7 @@ from .core.storage import StarStore
 from .core.text import truncate_line
 from .core.timeline import parse_event_time
 
-PLUGIN_VERSION = "0.1.2"
+PLUGIN_VERSION = "0.1.3"
 PLUGIN_NAME = "bigfish_starmemory"
 CTX_KEY = "bigfish_starmemory"
 
