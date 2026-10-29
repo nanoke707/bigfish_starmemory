@@ -185,26 +185,11 @@
 
   /** 主题工具条上挂插件自己的动作 */
   function bindThemeButtons(SR) {
-    var tools = SR.querySelector(".tools");
-    if (tools) {
-      var mk = function (label, title, fn) {
-        var b = document.createElement("button");
-        b.className = "tb";
-        b.type = "button";
-        b.textContent = label;
-        b.title = title;
-        b.addEventListener("click", fn);
-        tools.insertBefore(b, tools.firstChild);
-      };
-      mk("维护", "立即执行遗忘维护", maintain);
-      mk("刷新", "重新拉取数据（快捷键 R）", function () {
-        refreshAll().catch(function (e) { toast(e.message, true); });
-      });
-    }
+    // 用户要求：大屏四周只留一颗「配置」按钮，不再往工具条里塞别的按钮
     SR.querySelectorAll("[data-series-pick]").forEach(function (b) {
-      b.textContent = "调试台";
-      b.title = "打开调试台（快捷键 D）";
-      b.addEventListener("click", function () { openDrawer(); });
+      if (!b.querySelector("b")) b.textContent = "配置";
+      b.title = "打开配置与调试台";
+      b.addEventListener("click", function () { openDrawer(); switchDrawerTab("settings"); });
     });
   }
 
@@ -1132,6 +1117,7 @@
   window.__BSM_STATE__ = state;
 
   function setBridgeState(cls, text, showWarn) {
+    if (cls === "is-ok") { var pill0 = document.getElementById("bridge-status"); if (pill0) pill0.style.display = "none"; }
     var el = $("bridge-status");
     if (el) { el.className = "bridge-pill " + cls; el.textContent = text; }
     var warn = $("bridge-warn");

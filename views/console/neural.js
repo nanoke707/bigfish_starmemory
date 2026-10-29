@@ -81,7 +81,8 @@ const PROOF = 12, CRAWLER = 13, NCL = 13;               // 0 中枢 / 1..11 星�
 const MAXMEM = 22;                                   // 屏幕上同时存在的记忆星（记忆慢慢攒，不用多）
 const HOLE = {x: -1.36, y: -.78, z: .18, r: .165};      // 黑洞停在恒星左前方不远处
 const AFG = 80;                                      // 着色器里 af[] 的组数上限
-const SC = {n: 1, mem: [], col: [], pull: new Float32Array(AFG), bunBase: 2, held: -1, absorbed: 0, gone: []};
+const LINK_SEG = 10;                                  // 关联连线每一段的细分
+const SC = {n: 1, mem: [], col: [], pull: new Float32Array(AFG), bunBase: 2, held: -1, holdAng: 0, absorbed: 0, gone: []};
 let GBG = 1;                                         // 背景灰质所在的组号
 
 // 记忆类型 = 工作流：决定这颗星归属哪个星域、最终落到哪个状态环
@@ -151,7 +152,8 @@ let slotHead = 0, slotAcc = 0, slotTok = 0;
 const crawl = {patrols: 0, read: 0, bugs: 0, target: 0};
 const chanN = CH.map(() => 0), chanFlash = CH.map(() => 0);
 let boost = 0, lastHand = null, bunHot = new Float32Array(AFG);
-let sceneT = 0;                                  // 星海时钟：截停时停住
+let sceneT = 0;                                  // 轨道时钟：一直推进（只有被悬停的那颗星单独停住）
+let camT = 0, spinZ = 0;                         // 镜头与整体自转时钟：悬停时停住
 
 // 星星池：插件接口真实返回的星星，按「该被想起」排序轮流上场
 const starPool = (MODEL.stars || []).map(s => ({
@@ -330,7 +332,7 @@ function simStep(dt){
 const THREE = window.THREE;
 const cv = $('#gl');
 let renderer = null, scene, camera, composer = null, bloomPass = null, world, hud, spin;   // spin：神经网 + 智能体扇区环，一起慢转
-let trGeo, coreSpr, brainLines, brainPts, sigGeo, sigMat, streaks, dust, barcode, tapeRing, ringRing, dashRing, sweep, tickA, tickB, arcsA, arcsB;
+let trGeo, coreSpr, brainLines, brainPts, sigGeo, sigMat, streaks, dust;
 let ringTex, tapeTex, ringCtx, tapeCtx;
 const AF = new Float32Array(AFG * 2);                   // 每组 (活跃度, 聚焦系数)：0 恒星，1..M 记忆星，M+1 背景，之后是突触束
 const focT = new Float32Array(AFG).fill(1);
@@ -340,7 +342,7 @@ const secAng = k => Math.PI / 2 - k * SEC_A;            // 扇区中心角：CHI
 const CL = [];
 const BUN = [], BMAP = {};
 const chanAng = CH.map((_, j) => Math.PI / 2 - (j + .5) * TAU / 6 - .12);
-let chanPos = [], chanSpr = [], scans = [];
+let chanPos = [], scans = [];
 const HIT_R = 2.05;                                   // 能量格那一圈的半径
 const segFlash = new Float32Array(NSEG), segCol = Array.from({length: NSEG}, () => [1, 1, 1]);
 const hits = [];
@@ -360,19 +362,23 @@ let SPRITE = null;
 
 const BRAIN_VS_L = `
 attribute vec3 col; attribute float grp; attribute float shade;
-attribute vec3 gc; attribute float pull; attribute float osp;
+attribute vec3 gc; attribute float pull; attribute float osp; attribute float oph; attribute vec3 axs;
 uniform vec2 af[80]; uniform float uMono; uniform float uFade; uniform float uGain; uniform vec3 uHole;
-uniform float uOrbit;
+uniform float uOrbit; uniform float uHold; uniform float uHoldAng;
 varying vec3 vCol; varying float vA;
 void main(){
   // 记忆越暗 = 被黑洞吸得越近：先向自己的中心收拢，再被拖向视界
   vec3 p = position;
   p = mix(p, gc, pull * .5);
   p = mix(p, uHole, pull * pull * .95);
-  // 绕着 bot 的星云公转：被吸得越狠，转得越慢（最后停住，直接坠向视界）
-  float ang = uOrbit * osp * (1.0 - pull);
+  // 绕着恒星公转：每颗星有自己的轨道平面 axs，所以是三百六十度地绕；
+  // 被悬停的那颗用冻结角 uHoldAng 钉住，其余照转；被吸得越狠转得越慢
+  float ang = (abs(grp - uHold) < .5) ? uHoldAng : (uOrbit * osp + oph) * (1.0 - pull);
+  vec3 k = normalize(axs);
   float ca = cos(ang), sa = sin(ang);
-  p = vec3(p.x * ca - p.y * sa, p.x * sa + p.y * ca, p.z);
+  float kd = dot(k, p);
+  vec3 kc = cross(k, p);
+  p = p * ca + kc * sa + k * kd * (1.0 - ca);
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   vec2 q = af[int(grp + 0.5)];
   float a = clamp(q.x, 0.0, 1.5);
@@ -389,22 +395,25 @@ varying vec3 vCol; varying float vA;
 void main(){ gl_FragColor = vec4(vCol, vA); }`;
 const BRAIN_VS_P = `
 attribute vec3 col; attribute float grp; attribute float sz; attribute float ph;
-attribute vec3 gc; attribute float pull; attribute float osp;
+attribute vec3 gc; attribute float pull; attribute float osp; attribute float oph; attribute vec3 axs;
 uniform vec2 af[80]; uniform float uMono; uniform float uTime; uniform float uPx; uniform float uFade; uniform float uGain;
-uniform vec3 uHole; uniform float uHold; uniform float uHoldT; uniform float uOrbit;
+uniform vec3 uHole; uniform float uHold; uniform float uHoldT; uniform float uOrbit; uniform float uHoldAng;
 varying vec3 vCol; varying float vA;
 void main(){
   vec3 p = position;
   p = mix(p, gc, pull * .5);
   p = mix(p, uHole, pull * pull * .95);
-  // 绕着 bot 的星云公转
-  float ang = uOrbit * osp * (1.0 - pull);
+  // 三维公转（每颗星自己的轨道平面）
+  float ang = (abs(grp - uHold) < .5) ? uHoldAng : (uOrbit * osp + oph) * (1.0 - pull);
+  vec3 k = normalize(axs);
   float ca = cos(ang), sa = sin(ang);
-  p = vec3(p.x * ca - p.y * sa, p.x * sa + p.y * ca, p.z);
+  float kd = dot(k, p);
+  vec3 kc = cross(k, p);
+  p = p * ca + kc * sa + k * kd * (1.0 - ca);
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   vec2 q = af[int(grp + 0.5)];
   float a = clamp(q.x, 0.0, 1.5);
-  // 被截停的那颗星：闪烁停住，钉在原地
+  // 被悬停的那颗星：闪烁停住，钉在原地
   float tt = (abs(grp - uHold) < .5) ? uHoldT : uTime;
   float tw = 0.62 + 0.38 * sin(tt * (0.9 + ph * 2.2) + ph * 40.0);
   vec3 silver = vec3(0.86, 0.9, 0.98);
@@ -445,6 +454,7 @@ void main(){ gl_FragColor = vec4(0.72, 0.84, 1.0, vA * 0.42); }`;
 function randUnit(){ let x, y, z, d; do { x = R() * 2 - 1; y = R() * 2 - 1; z = R() * 2 - 1; d = x * x + y * y + z * z; } while (d > 1 || d < .01); d = Math.sqrt(d); return new THREE.Vector3(x / d, y / d, z / d); }
 
 function disposeBrain(){
+  if (SC.links) { spin.remove(SC.links); SC.links.geometry.dispose(); SC.links.material.dispose(); SC.links = null; }
   if (SC.memSpr) { SC.memSpr.forEach(s => { if (!s) return; spin.remove(s); s.material.dispose(); }); SC.memSpr = []; }
   if (SC.lines) { spin.remove(SC.lines); SC.lines.geometry.dispose(); SC.lines.material.dispose(); SC.lines = null; }
   if (SC.pts) { spin.remove(SC.pts); SC.pts.geometry.dispose(); SC.pts.material.dispose(); SC.pts = null; }
@@ -488,9 +498,17 @@ function buildBrain(){
   for (let k = 0; k < 300; k++) { const d = randUnit(), u = .1 + Math.pow(R(), .55) * .16; addN(d.x * u, d.y * u, d.z * u, 0, 0, .008 + R() * .009); }
   /* 记忆 = 一颗星：核心 + 一点点光晕，主要形象交给带星芒的 sprite */
   SC.osp = new Float32Array(AFG);
+  SC.oph = new Float32Array(AFG);
+  SC.oax = [];
+  for (let c = 0; c < SC.n; c++) {
+    SC.oph[c] = 0;
+    // 每颗星有自己的轨道平面：倾角 10°~55°，方位随机 → 星星从四面八方绕着恒星转（三百六十度）
+    const tilt = c === 0 ? 0 : (.18 + R() * .78), az = R() * TAU;
+    SC.oax[c] = new V(Math.cos(az) * Math.sin(tilt), Math.sin(az) * Math.sin(tilt), Math.cos(tilt)).normalize();
+  }
   for (let c = 1; c < SC.n; c++) {
     const C = CL[c], rr = Math.hypot(C.x, C.y);
-    SC.osp[c] = .34 / (rr + .55);            // 差速自转：靠里转得快，靠外转得慢
+    SC.osp[c] = .22 / (rr + .55);            // 差速自转：靠里转得快，靠外转得慢（整体不快）
     addN(C.x, C.y, C.z, c, c, .052);
     for (let k = 0; k < 7; k++) addN(C.x + rg() * .016, C.y + rg() * .016, C.z + rg() * .016, c, c, .012 + R() * .009);
   }
@@ -510,11 +528,14 @@ function buildBrain(){
   /* 局部连接：空间网格找最近邻 */
   const CELL = .16, grid = new Map(), key = (a, b, c) => a + ',' + b + ',' + c;
   for (let i = 0; i < N; i++) { const k = key(Math.floor(px[i] / CELL), Math.floor(py[i] / CELL), Math.floor(pz[i] / CELL)); let arr = grid.get(k); if (!arr) grid.set(k, arr = []); arr.push(i); }
-  const seen = new Set(), LP = [], LC = [], LG = [], LS = [], LPG = [], LGC = [], LOSP = [];
+  const seen = new Set(), LP = [], LC = [], LG = [], LS = [], LPG = [], LGC = [], LOSP = [], LAX = [], LOP = [];
+  const axOf = g => { const a = (SC.oax && SC.oax[g]) || SC.oax[0]; return a ? [a.x, a.y, a.z] : [0, 0, 1]; };
   function seg(x1, y1, z1, x2, y2, z2, c1, c2, g, s, pg0, pg1, o0, o1){
     LP.push(x1, y1, z1, x2, y2, z2); LC.push(c1[0], c1[1], c1[2], c2[0], c2[1], c2[2]);
     LG.push(g, g); LS.push(s, s); LPG.push(pg0, pg1);
     LOSP.push(o0 || 0, o1 || 0);
+    LAX.push(...axOf(pg0), ...axOf(pg1));
+    LOP.push((SC.oph && SC.oph[pg0]) || 0, (SC.oph && SC.oph[pg1]) || 0);
     const a = CL[pg0] || CL[0], b = CL[pg1] || CL[0];
     LGC.push(a.x, a.y, a.z, b.x, b.y, b.z);
   }
@@ -529,45 +550,23 @@ function buildBrain(){
     cand.sort((p, q) => p[0] - q[0]);
     for (let k = 0; k < Math.min(K, cand.length); k++) {
       const j = cand[k][1], lo = Math.min(i, j), hi = Math.max(i, j), id = lo * N + hi;
+      if (ng[i] === 0 || ng[j] === 0) continue;      // 恒星周围不连杂线
       if (seen.has(id)) continue; seen.add(id);
       const same = ng[i] === ng[j] && ng[i] < SC.n;
       seg(px[i], py[i], pz[i], px[j], py[j], pz[j], ncol(i), ncol(j), same ? ng[i] : GBG, same ? .55 : .32, ng[i], ng[j]);
       syn++;
     }
   }
-  /* 远程细丝：让网更密、更乱一点 */
-  for (let k = 0; k < 12000; k++) {
+  /* 远程细丝：稀疏一点，别糊成蜘蛛网 */
+  for (let k = 0; k < 2400; k++) {
     const i = (R() * N) | 0, j = (R() * N) | 0;
+    if (ng[i] === 0 || ng[j] === 0) continue;
     const d = Math.hypot(px[i] - px[j], py[i] - py[j], pz[i] - pz[j]);
     if (d < .22 || d > .6) continue;
-    seg(px[i], py[i], pz[i], px[j], py[j], pz[j], ncol(i), ncol(j), GBG, .15, ng[i], ng[j]); syn++;
+    seg(px[i], py[i], pz[i], px[j], py[j], pz[j], ncol(i), ncol(j), GBG, .12, ng[i], ng[j]); syn++;
   }
-  /* 突触束：恒星 → 每一条记忆。召回时脉冲就沿着这条束飞过去 */
-  for (let c = 1; c < SC.n; c++) {
-    const g = SC.bunBase + (c - 1); if (g >= AFG) break;
-    const strands = [], ns2 = 4;
-    for (let s = 0; s < ns2; s++) {
-      const i0 = members[0][(R() * members[0].length) | 0], i1 = members[c][(R() * members[c].length) | 0];
-      const p0 = new V(px[i0], py[i0], pz[i0]), p1 = new V(px[i1], py[i1], pz[i1]);
-      const mid = p0.clone().add(p1).multiplyScalar(.5);
-      const m = Math.hypot(mid.x, mid.y) || .01, push = .13 + R() * .17;
-      const cpt = new V(mid.x / m * push, mid.y / m * push, mid.z + (R() - .5) * .2);
-      strands.push({p0, c: cpt, p1, len: p0.distanceTo(cpt) + cpt.distanceTo(p1)});
-      const ca = SC.col[0] || [1, 1, 1], cb = SC.col[c] || [1, 1, 1], SEG = 14;
-      const osp = SC.osp[c] || 0;
-      let lx = p0.x, ly = p0.y, lz = p0.z;
-      for (let k = 1; k <= SEG; k++) {
-        const u = k / SEG, v = 1 - u;
-        const x = v * v * p0.x + 2 * v * u * cpt.x + u * u * p1.x, y = v * v * p0.y + 2 * v * u * cpt.y + u * u * p1.y, z = v * v * p0.z + 2 * v * u * cpt.z + u * u * p1.z;
-        const u0 = (k - 1) / SEG;
-        seg(lx, ly, lz, x, y, z, [ca[0] + (cb[0] - ca[0]) * u0, ca[1] + (cb[1] - ca[1]) * u0, ca[2] + (cb[2] - ca[2]) * u0],
-            [ca[0] + (cb[0] - ca[0]) * u, ca[1] + (cb[1] - ca[1]) * u, ca[2] + (cb[2] - ca[2]) * u], g, .16, c, c, osp * u0, osp * u);
-        lx = x; ly = y; lz = z;
-      }
-      syn++;
-    }
-    const b = {a: 0, b: c, g, strands}; BUN.push(b); BMAP['0-' + c] = b;
-  }
+  /* 用户要求：恒星周围不再有放射状的杂乱连线。
+     记忆之间的关联改由「同星域成链 + 同标签补一笔」的连线表达（见 buildLinks）。 */
   SYN = syn;
 
   const lg = new THREE.BufferGeometry();
@@ -577,27 +576,34 @@ function buildBrain(){
   lg.setAttribute('shade', new THREE.Float32BufferAttribute(LS, 1));
   lg.setAttribute('gc', new THREE.Float32BufferAttribute(LGC, 3));
   lg.setAttribute('osp', new THREE.Float32BufferAttribute(LOSP, 1));
+  lg.setAttribute('oph', new THREE.Float32BufferAttribute(LOP, 1));
+  lg.setAttribute('axs', new THREE.Float32BufferAttribute(LAX, 3));
   SC.pullL = new Float32Array(LP.length / 3);
   lg.setAttribute('pull', new THREE.BufferAttribute(SC.pullL, 1).setUsage(THREE.DynamicDrawUsage));
   const uni = {af: {value: AF}, uMono: {value: 0}, uFade: {value: 8}, uTime: {value: 0}, uPx: {value: 800}, uGain: {value: 1},
                uHole: {value: new THREE.Vector3(HOLE.x, HOLE.y, HOLE.z)}, uHold: {value: -1}, uHoldT: {value: 0},
-               uOrbit: {value: 0},
+               uOrbit: {value: 0}, uHoldAng: {value: 0},
                map: {value: SPRITE}};
   SC.uni = uni;
   SC.lines = new THREE.LineSegments(lg, new THREE.ShaderMaterial({uniforms: uni, vertexShader: BRAIN_VS_L, fragmentShader: BRAIN_FS_L, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending}));
   spin.add(SC.lines);
 
-  const pg = new THREE.BufferGeometry(), pos = new Float32Array(N * 3), col = new Float32Array(N * 3), grp = new Float32Array(N), sz = new Float32Array(N), ph = new Float32Array(N), gcP = new Float32Array(N * 3), ospP = new Float32Array(N);
+  const pg = new THREE.BufferGeometry(), pos = new Float32Array(N * 3), col = new Float32Array(N * 3), grp = new Float32Array(N), sz = new Float32Array(N), ph = new Float32Array(N), gcP = new Float32Array(N * 3), ospP = new Float32Array(N), ophP = new Float32Array(N), axsP = new Float32Array(N * 3);
   for (let i = 0; i < N; i++) {
     pos[i * 3] = px[i]; pos[i * 3 + 1] = py[i]; pos[i * 3 + 2] = pz[i];
     const c = ncol(i); col.set(c, i * 3); grp[i] = ng[i]; sz[i] = ns[i]; ph[i] = R();
     const cc = CL[ng[i]] || CL[0]; gcP[i * 3] = cc.x; gcP[i * 3 + 1] = cc.y; gcP[i * 3 + 2] = cc.z;
     ospP[i] = SC.osp[ng[i]] || 0;
+    ophP[i] = SC.oph[ng[i]] || 0;
+    const ax = (SC.oax && SC.oax[ng[i]]) || SC.oax[0];
+    axsP[i * 3] = ax.x; axsP[i * 3 + 1] = ax.y; axsP[i * 3 + 2] = ax.z;
   }
   pg.setAttribute('position', new THREE.BufferAttribute(pos, 3)); pg.setAttribute('col', new THREE.BufferAttribute(col, 3));
   pg.setAttribute('grp', new THREE.BufferAttribute(grp, 1)); pg.setAttribute('sz', new THREE.BufferAttribute(sz, 1)); pg.setAttribute('ph', new THREE.BufferAttribute(ph, 1));
   pg.setAttribute('gc', new THREE.BufferAttribute(gcP, 3));
   pg.setAttribute('osp', new THREE.BufferAttribute(ospP, 1));
+  pg.setAttribute('oph', new THREE.BufferAttribute(ophP, 1));
+  pg.setAttribute('axs', new THREE.BufferAttribute(axsP, 3));
   SC.pullP = new Float32Array(N);
   pg.setAttribute('pull', new THREE.BufferAttribute(SC.pullP, 1).setUsage(THREE.DynamicDrawUsage));
   SC.pts = new THREE.Points(pg, new THREE.ShaderMaterial({uniforms: uni, vertexShader: BRAIN_VS_P, fragmentShader: PT_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending}));
@@ -622,6 +628,9 @@ function buildBrain(){
   /* 每组在线里占的顶点：被黑洞吸走时按组刷 pull */
   SC.pullIdxL = Array.from({length: AFG}, () => []);
   for (let v = 0; v < LPG.length; v++) { const g = LPG[v]; if (g < AFG) SC.pullIdxL[g].push(v); }
+
+  /* 有关联的记忆之间连线：同星域串成链，共用标签的再补一笔 */
+  buildLinks();
 
   /* 每条记忆 = 一颗带星芒的星 */
   SC.memSpr = [];
@@ -733,78 +742,16 @@ function buildHole(){
   SC.holePulse = 0;
 }
 
-function lineMat(op, col){ return new THREE.LineBasicMaterial({color: col || 0xd4e8ff, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false}); }
-function circle(r, z, op, seg = 320){ const a = new Float32Array(seg * 3); for (let i = 0; i < seg; i++) { const t = i / seg * TAU; a[i * 3] = Math.cos(t) * r; a[i * 3 + 1] = Math.sin(t) * r; a[i * 3 + 2] = z; } const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(a, 3)); return new THREE.LineLoop(g, lineMat(op)); }
-function ticks(r, n, len, every, long, op){ const a = []; for (let i = 0; i < n; i++) { const t = i / n * TAU, l = i % every === 0 ? long : len; a.push(Math.cos(t) * r, Math.sin(t) * r, 0, Math.cos(t) * (r + l), Math.sin(t) * (r + l), 0); } const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(a, 3)); return new THREE.LineSegments(g, lineMat(op)); }
-function arcs(r, list, op){ const a = []; list.forEach(([t0, t1]) => { const n = Math.max(4, Math.round((t1 - t0) / .02)); for (let i = 0; i < n; i++) { const u0 = t0 + (t1 - t0) * i / n, u1 = t0 + (t1 - t0) * (i + 1) / n; a.push(Math.cos(u0) * r, Math.sin(u0) * r, 0, Math.cos(u1) * r, Math.sin(u1) * r, 0); } }); const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(a, 3)); return new THREE.LineSegments(g, lineMat(op)); }
-function polarRing(r0, r1, seg, tex, op){
-  const pos = [], uv = [], idx = [];
-  for (let i = 0; i <= seg; i++) { const t = i / seg * TAU, u = 1 - i / seg; pos.push(Math.cos(t) * r0, Math.sin(t) * r0, 0, Math.cos(t) * r1, Math.sin(t) * r1, 0); uv.push(u, 0, u, 1); }
-  for (let i = 0; i < seg; i++) { const a = i * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
-  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx);
-  return new THREE.Mesh(g, new THREE.MeshBasicMaterial({map: tex, transparent: true, opacity: op == null ? 1 : op, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide}));
-}
 const RW = 4096, RH = 112, TW = 4096, TH = 32;
 const uOf = th => { let u = 1 - th / TAU; return ((u % 1) + 1) % 1; };
 
 function buildHud(){
   hud = new THREE.Group(); world.add(hud);
-  hud.add(circle(1.9, 0, .55)); hud.add(circle(1.885, 0, .2));
-  tickA = ticks(1.915, 240, .016, 10, .034, .55); hud.add(tickA);
-  // 写入头：条码环正上方的小三角
-  { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute([0, 1.962, .01, -.022, 1.94, .01, .022, 1.94, .01], 3));
-    hud.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({color: 0xa6f1ff, transparent: true, opacity: .9, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide}))); }
-  // 条码块环：72 块 × 6 道，每块是 1.4 秒的 token 量；新数据从正上方写入，顺时针流走
-  {
-    const NST = 6, SEG_A = TAU / NSEG, w = SEG_A * .58, pos = [], col = [], idx = [];
-    for (let s = 0; s < NSEG; s++) for (let k = 0; k < NST; k++) {
-      const a0 = Math.PI / 2 + s * SEG_A - w / 2, a1 = a0 + w, r0 = 1.965 + k * .033, r1 = r0 + .02, b = pos.length / 3;
-      pos.push(Math.cos(a0) * r0, Math.sin(a0) * r0, 0, Math.cos(a1) * r0, Math.sin(a1) * r0, 0, Math.cos(a0) * r1, Math.sin(a0) * r1, 0, Math.cos(a1) * r1, Math.sin(a1) * r1, 0);
-      for (let q = 0; q < 4; q++) col.push(.1, .1, .1);
-      idx.push(b, b + 1, b + 2, b + 2, b + 1, b + 3);
-    }
-    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3).setUsage(THREE.DynamicDrawUsage)); g.setIndex(idx);
-    barcode = new THREE.Mesh(g, new THREE.MeshBasicMaterial({vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide}));
-    hud.add(barcode);
-  }
-  // 圆柱框：让环有厚度
-  hud.add(circle(2.165, .12, .3)); hud.add(circle(2.165, -.12, .3));
-  { const a = []; for (let i = 0; i < 90; i++) { const t = i / 90 * TAU; a.push(Math.cos(t) * 2.165, Math.sin(t) * 2.165, .12, Math.cos(t) * 2.165, Math.sin(t) * 2.165, -.12); }
-    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(a, 3)); hud.add(new THREE.LineSegments(g, lineMat(.14))); }
-  // 雷达扫描弧
-  { const n = 60, a = [], c = []; for (let i = 0; i < n; i++) { const t0 = i / n * .75, t1 = (i + 1) / n * .75; a.push(Math.cos(t0) * 1.87, Math.sin(t0) * 1.87, .005, Math.cos(t1) * 1.87, Math.sin(t1) * 1.87, .005); const k = Math.pow(i / n, 2.2); c.push(.65 * k, .95 * k, 1 * k, .65 * k, .95 * k, 1 * k); }
-    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(a, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(c, 3));
-    sweep = new THREE.LineSegments(g, new THREE.LineBasicMaterial({vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false})); hud.add(sweep); }
-  // 文字带：滚动执行记录
-  const tc = document.createElement('canvas'); tc.width = TW; tc.height = TH; tapeCtx = tc.getContext('2d');
-  tapeTex = new THREE.CanvasTexture(tc); tapeTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  tapeRing = polarRing(2.18, 2.28, 360, tapeTex, .85); tapeRing.position.z = .03; hud.add(tapeRing);
-  // 扇区 + 通道环（静止）
-  const rc = document.createElement('canvas'); rc.width = RW; rc.height = RH; ringCtx = rc.getContext('2d');
-  ringTex = new THREE.CanvasTexture(rc); ringTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  // 外围那圈「肥鱼 / 遗忘站 / 空位」标签环按用户要求整圈删除
-  // 虚线轨
-  { const dc = document.createElement('canvas'); dc.width = 2048; dc.height = 8; const x = dc.getContext('2d'); x.fillStyle = '#fff';
-    for (let px = 0; px < 2048;) { const w = 4 + R() * 40, gap = 3 + R() * 22; if (R() < .82) { x.globalAlpha = .3 + R() * .6; x.fillRect(px, 1, w, 6); } px += w + gap; }
-    const dt = new THREE.CanvasTexture(dc); dashRing = polarRing(2.71, 2.73, 360, dt, .55); dashRing.position.z = -.07; hud.add(dashRing); }
-  tickB = ticks(2.765, 360, .015, 10, .035, .42); tickB.position.z = -.1; hud.add(tickB);
-  hud.add(circle(2.76, -.1, .25));
-  arcsA = arcs(2.85, [[.1, .9], [1.3, 1.5], [2.2, 3.4], [3.9, 4.2], [4.6, 5.8]], .45); arcsA.position.z = -.14; hud.add(arcsA);
-  arcsB = arcs(2.91, [[.5, .62], [1.0, 2.1], [2.7, 2.8], [3.2, 4.4], [5.1, 5.3], [5.6, 6.1]], .3); arcsB.position.z = -.18; hud.add(arcsB);
-  // 通道落点：交付光束打到这里会闪
-  CH.forEach((ch, j) => {
-    const p = new THREE.Vector3(Math.cos(chanAng[j]) * 2.614, Math.sin(chanAng[j]) * 2.614, -.04);
-    chanPos.push(p);
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({map: SPRITE, color: new THREE.Color(ch.col), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false}));
-    s.position.copy(p); s.scale.setScalar(.1); spin.add(s); chanSpr.push(s);
-  });
-  // 中心核：CHIEF 越忙越亮
+  /* 用户要求：星团外围那一整圈会转的圆环（条码环 / 扫描弧 / 文字带 / 虚线轨 / 刻度 / 弧线）整体删掉，
+     画面只留中心恒星的辉光和纯 3D 星场。 */
   coreSpr = new THREE.Sprite(new THREE.SpriteMaterial({map: SPRITE, color: 0xcfe0ff, transparent: true, opacity: .16, blending: THREE.AdditiveBlending, depthWrite: false}));
   coreSpr.scale.setScalar(2.5); world.add(coreSpr);
-  // 流星命中点的闪光
-  for (let k = 0; k < 16; k++) { const sp = new THREE.Sprite(new THREE.SpriteMaterial({map: SPRITE, color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false})); sp.visible = false; hud.add(sp); hits.push({s: sp, t: 9}); }
-  // 巡检扫描圈
+  // 巡检扫描圈：套在被扫到的那颗星上（不是外围圆环）
   for (let k = 0; k < 4; k++) { const m = new THREE.Mesh(new THREE.RingGeometry(.93, 1, 64), new THREE.MeshBasicMaterial({color: 0x45e6f5, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide})); m.visible = false; spin.add(m); scans.push({m, t: 9}); }
 }
 
@@ -866,8 +813,11 @@ function sendSignal(a, b, colHex, cb, kind){
   const bun = BMAP[Math.min(a, b) + '-' + Math.max(a, b)];
   const col = hex3(colHex);
   if (!bun) {
-    const A = CL[a].clone(), B = CL[b].clone();
-    signals.push({kind, path: (u, o) => o.lerpVectors(A, B, u), u: 0, dur: 1.2, col, cb, tr: 9, gap: .022, head: .085, bun: -1, to: b});
+    // 没有突触束：脉冲从恒星直接飞向那颗记忆星（用实时位置，星星在公转也追得上）
+    signals.push({kind, path: (u, o) => {
+      const A = starPos(a, _l1), B = starPos(b, _l2);
+      o.set(A.x + (B.x - A.x) * u, A.y + (B.y - A.y) * u, A.z + (B.z - A.z) * u);
+    }, u: 0, dur: 1.2, col, cb, tr: 9, gap: .022, head: .085, bun: -1, to: b});
     return;
   }
   const s = bun.strands[(Math.random() * bun.strands.length) | 0], fwd = bun.a === a;
@@ -878,15 +828,17 @@ function sendRay(ai, ch){
   rateCur++;
   chanN[ch]++;
   if (!glOK) return;
-  const A = CL[ai].clone(), M = chanPos[ch].clone(), F = M.clone().multiplyScalar(2.3);
-  signals.push({kind: 'ray', path: (u, o) => { if (u < .5) o.lerpVectors(A, M, u / .5); else o.lerpVectors(M, F, (u - .5) / .5); },
+  // 通道环已经删掉：射线改成从那颗星自己向外射出去
+  const p = starPos(ai, _l1), A = new THREE.Vector3(p.x, p.y, p.z), F = A.clone().multiplyScalar(2.3);
+  signals.push({kind: 'ray', path: (u, o) => { o.lerpVectors(A, F, u); },
     u: 0, dur: 1.9, col: hex3(CH[ch].col), cb: null, tr: 14, gap: .018, head: .1, bun: -1, to: -1, mid: .5, onMid: () => { chanFlash[ch] = 1; }});
   meteorBurst(ai, ch);
 }
 function scanAt(k){
   if (!glOK) return;
   const s = scans.find(q => q.t > 1.2) || scans[0];
-  s.t = 0; s.m.visible = true; s.m.position.copy(CL[k]);
+  s.t = 0; s.m.visible = true;
+  const q = starPos(k, _sp); s.m.position.set(q.x, q.y, q.z);
 }
 
 /* ---------- 算力粒子：忙碌的智能体之间来回跑的小光点 + 冲出星环的流星 ---------- */
@@ -901,7 +853,8 @@ const whiten = (c, k) => [c[0] + (1 - c[0]) * k, c[1] + (1 - c[1]) * k, c[2] + (
 function pGet(){ for (let n = 0; n < PMAX; n++) { const i = (pFree + n) % PMAX; if (!parts[i].on) { pFree = (i + 1) % PMAX; parts[i].on = true; parts[i].u = 0; return parts[i]; } } return null; }
 function busyList(){ const l = []; for (let i = 0; i < SC.n; i++) if (busy(i)) l.push(i); return l; }
 function spawnChatter(){
-  // 挑一条两端至少有一个在忙的突触束，从忙的那头往外送
+  // 突触束已删：改成沿着「有关联的记忆」之间的连线跑
+  if (!BUN.length) return;
   let b = null;
   for (let t = 0; t < 6; t++) { const q = BUN[(Math.random() * BUN.length) | 0]; if (busy(q.a) || busy(q.b)) { b = q; break; } }
   if (!b) b = BUN[(Math.random() * BUN.length) | 0];
@@ -928,9 +881,8 @@ function spawnMeteor(c, ang){
   p.dur = rnd(1.3, 2.3); p.col = whiten(SC.col[c] || [1, 1, 1], .12); p.sz = rnd(.08, .11); p.al = 1; p.tr = 12; p.gap = .018; p.lr = 0; p.hit = false;
 }
 function hitRing(th, col){
-  // 世界角度换成能量格自己的格子编号（能量格本身在转）
-  const local = th - barcode.rotation.z - Math.PI / 2, SA = TAU / NSEG;
-  const s0 = ((Math.round(local / SA) % NSEG) + NSEG) % NSEG;
+  // 外围圆环已删：命中只留下一次轻微的闪光记账
+  const s0 = ((Math.round(th / (TAU / NSEG)) % NSEG) + NSEG) % NSEG;
   [[0, 1], [-1, .45], [1, .45]].forEach(([d, k]) => { const s = (s0 + d + NSEG) % NSEG; if (k >= segFlash[s]) { segFlash[s] = k; segCol[s] = col; } });
   const h = hits.find(q => q.t >= .55) || hits[0];
   if (!h) return;
@@ -967,6 +919,91 @@ function pEval(p, u, o){
   o.set(v * v * p.ax + 2 * v * u * p.cx + u * u * p.bx, v * v * p.ay + 2 * v * u * p.cy + u * u * p.by, v * v * p.az + 2 * v * u * p.cz + u * u * p.bz);
 }
 
+/* ---------- 记忆之间的关联连线 ---------- */
+function buildLinks(){
+  SC.linkPairs = [];
+  const byScope = new Map();
+  SC.mem.forEach((m, i) => {
+    const k = m.scope || ('#' + i);
+    if (!byScope.has(k)) byScope.set(k, []);
+    byScope.get(k).push(i + 1);
+  });
+  byScope.forEach(list => {
+    list.sort((a, b) => (SC.mem[a - 1].scopeIndex || 0) - (SC.mem[b - 1].scopeIndex || 0));
+    for (let i = 0; i + 1 < list.length; i++) SC.linkPairs.push([list[i], list[i + 1]]);
+  });
+  const tagMap = new Map();
+  SC.mem.forEach((m, i) => {
+    (m.tags || []).forEach(t => {
+      const k = String(t);
+      if (!tagMap.has(k)) tagMap.set(k, []);
+      tagMap.get(k).push(i + 1);
+    });
+  });
+  let extra = 0;
+  tagMap.forEach(list => {
+    if (list.length < 2 || list.length > 6) return;
+    for (let i = 0; i + 1 < list.length && extra < 10; i++) { SC.linkPairs.push([list[i], list[i + 1]]); extra++; }
+  });
+  const n = SC.linkPairs.length * LINK_SEG * 2;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  SC.links = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({vertexColors: true, transparent: true, opacity: .55, blending: THREE.AdditiveBlending, depthWrite: false}));
+  spin.add(SC.links);
+}
+/* 某颗记忆星此刻在世界里的位置（与着色器公式一致：先被黑洞拖，再绕轨道转） */
+const _sp = {x: 0, y: 0, z: 0}, _l1 = {x: 0, y: 0, z: 0}, _l2 = {x: 0, y: 0, z: 0};
+function starPos(g, o){
+  const c = CL[g] || CL[0];
+  const m = g > 0 ? SC.mem[g - 1] : null;
+  const pull = m ? clamp(m.fade, 0, 1) : 0;
+  let x = c.x, y = c.y, z = c.z;
+  const pw = pull * pull * .95;
+  x += (HOLE.x - x) * pw; y += (HOLE.y - y) * pw; z += (HOLE.z - z) * pw;
+  const ax = SC.oax && SC.oax[g];
+  if (ax) {
+    const ang = (g === SC.held ? SC.holdAng : (sceneT * (SC.osp[g] || 0) + (SC.oph ? SC.oph[g] : 0))) * (1 - pull);
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    const kd = ax.x * x + ax.y * y + ax.z * z;
+    const cx = ax.y * z - ax.z * y, cy = ax.z * x - ax.x * z, cz = ax.x * y - ax.y * x;
+    const nx = x * ca + cx * sa + ax.x * kd * (1 - ca);
+    const ny = y * ca + cy * sa + ax.y * kd * (1 - ca);
+    const nz = z * ca + cz * sa + ax.z * kd * (1 - ca);
+    x = nx; y = ny; z = nz;
+  }
+  o.x = x; o.y = y; o.z = z;
+  return o;
+}
+function updateLinks(){
+  if (!SC.links || !SC.linkPairs) return;
+  const pos = SC.links.geometry.attributes.position.array;
+  const col = SC.links.geometry.attributes.color.array;
+  let o = 0, co = 0;
+  for (const pr of SC.linkPairs) {
+    const a = starPos(pr[0], _l1), b = starPos(pr[1], _l2);
+    const c1 = SC.col[pr[0]] || [1, 1, 1], c2 = SC.col[pr[1]] || [1, 1, 1];
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, mz = (a.z + b.z) / 2;
+    const ml = Math.hypot(mx, my) || .001;
+    const cx = mx + mx / ml * .07, cy = my + my / ml * .07, cz = mz + .02;
+    let lx = a.x, ly = a.y, lz = a.z;
+    for (let k = 1; k <= LINK_SEG; k++) {
+      const u = k / LINK_SEG, v = 1 - u;
+      const x = v * v * a.x + 2 * v * u * cx + u * u * b.x;
+      const y = v * v * a.y + 2 * v * u * cy + u * u * b.y;
+      const z = v * v * a.z + 2 * v * u * cz + u * u * b.z;
+      const t0 = (k - 1) / LINK_SEG;
+      pos[o++] = lx; pos[o++] = ly; pos[o++] = lz;
+      col[co++] = (c1[0] + (c2[0] - c1[0]) * t0) * .55; col[co++] = (c1[1] + (c2[1] - c1[1]) * t0) * .55; col[co++] = (c1[2] + (c2[2] - c1[2]) * t0) * .55;
+      pos[o++] = x; pos[o++] = y; pos[o++] = z;
+      col[co++] = (c1[0] + (c2[0] - c1[0]) * u) * .55; col[co++] = (c1[1] + (c2[1] - c1[1]) * u) * .55; col[co++] = (c1[2] + (c2[2] - c1[2]) * u) * .55;
+      lx = x; ly = y; lz = z;
+    }
+  }
+  SC.links.geometry.attributes.position.needsUpdate = true;
+  SC.links.geometry.attributes.color.needsUpdate = true;
+}
+
 /* ---------- 镜头 ---------- */
 const MODES = [{id: 'orbit', zh: '环绕'}, {id: 'front', zh: '正视'}, {id: 'tilt', zh: '斜看'}, {id: 'close', zh: '贴近'}];
 let modeI = 0;
@@ -986,253 +1023,14 @@ function camWant(t){
   cam.wantT.set(tx, ty, 0);
 }
 
-/* ================= 4. DOM 面板 ================= */
-const nr = $('#nr'), board = $('#board'), fitIn = $('#fitIn');
+/* ================= 4. DOM（干净版：只剩悬停浮层和配置按钮） ================= */
+const nr = $('#nr');
 SC.ovl = $('#ovl');
-const clsEl = $('#cls'), feedEl = $('#feed'), tip = $('#tip');
-const rows = AG.map((a, i) => {
-  if (i === 0 || i === CRAWLER) return null;          // 恒星在正中，列表不放；维护探针走巡检
-  const el = document.createElement('div');
-  el.className = 'cl idle'; el.style.setProperty('--c', a.col);
-  el.innerHTML = `<span class="sw"></span><b class="k">${a.k}</b><span class="z">${a.zh} · ${a.role}</span><span class="pc">—</span><span class="bar"><i></i></span><span class="st">—</span>`;
-  clsEl.appendChild(el);
-  return {el, pc: el.querySelector('.pc'), bar: el.querySelector('.bar i'), st: el.querySelector('.st')};
-});
-let rowY = AG.map((_, i) => 31 + i * 48 + 22);                  // 每行中心的 y，布局变了会重新量
-function ltMetaText(){
-  const extra = MODEL.extraScopes ? ` · 另 ${MODEL.extraScopes} 个星域折叠` : '';
-  return `11 星域 + 遗忘站 · ${fmt((MODEL.totals || {}).all || 0)} 颗星${extra}`;
-}
-$('#ltMeta').textContent = ltMetaText();
+const tip = $('#tip');
 
-function renderList(){
-  AG.forEach((a, i) => {
-    const r = rows[i]; if (!r) return;              // 恒星不在列表里
-    let cls = 'cl', pc = '—', w = 0, st = '';
-    if (i === 0) {
-      cls += ' work'; pc = 'Q' + queueTotal(); w = 1 - clamp(chiefT / chiefDur, 0, 1);
-      st = `想起 ${lastDispatch} · 在途 ${inFlight()} · 下一颗 ${Math.max(0, chiefT).toFixed(1)}s`;
-    } else if (i === CRAWLER) {
-      cls += ' work'; pc = String(crawl.patrols); w = probe.u < 1 ? probe.u : 1 - clamp(probe.dwell / 3, 0, 1);
-      st = `${probe.u < 1 ? '飞往' : '扫描'} ${AG[crawl.target].k} · 已读 ${fmt(crawl.read)} 页`;
-    } else if (a.cur) {
-      cls += ' work'; pc = Math.round(a.prog * 100) + '%'; w = a.prog;
-      st = `${a.cur.id} ${a.cur.name}${a.cur.rework ? ' · 返工 ' + a.cur.rework : ''}${a.inbox.length ? ' · 排队 ' + a.inbox.length : ''}`;
-    } else if (a.inbox.length) { cls += ' idle'; pc = 'Q' + a.inbox.length; st = `排队 ${a.inbox.length} · 下一个 ${a.inbox[0].id}`; }
-    else { cls += ' idle'; st = `待命 · 本次会话召回 ${a.outs}`; }
-    if (a.hitT > 0) cls += ' hit';
-    if (focus === i) cls += ' foc';
-    if (r.el.className !== cls) r.el.className = cls;
-    r.pc.textContent = pc; r.bar.style.width = (w * 100).toFixed(1) + '%'; r.st.textContent = st;
-  });
-  const p = $('#connP');
-  if (!p) return;
-  if (lastHand && lastHand.t > 0) {
-    const y1 = rowY[lastHand.a], y2 = rowY[lastHand.b], bulge = 18 + Math.abs(y2 - y1) * .09;
-    p.setAttribute('d', `M2 ${y1} C ${2 + bulge} ${y1}, ${2 + bulge} ${y2}, 2 ${y2}`);
-    p.setAttribute('stroke', lastHand.col); p.setAttribute('opacity', String(clamp(lastHand.t, 0, 1)));
-  } else p.setAttribute('opacity', '0');
-}
-/* 记忆详情：悬停截停的那颗星 */
-function renderMem(){
-  const el = $('#mem'), st = $('#memState');
-  if (!el) return;
-  const g = SC.held >= 0 ? SC.held : (hover >= 0 ? hover : -1);
-  const m = g > 0 ? SC.mem[g - 1] : null;
-  if (!m) {
-    if (st) st.textContent = '悬停截停';
-    el.innerHTML = '<div class="mem-empty">把鼠标放到一颗星星上 → <b>截停它</b><br>这里会显示这条记忆的细节。<br>点一下星星，直接进调试台看完整档案。</div>';
-    return;
-  }
-  if (st) st.textContent = '截停中 · #' + m.id;
-  const sc = SC.col[g] || [1, 1, 1];
-  const col = `rgb(${Math.round(sc[0] * 255)},${Math.round(sc[1] * 255)},${Math.round(sc[2] * 255)})`;
-  const chip = (t, c) => `<span class="chip" style="--c:${c}">${t}</span>`;
-  const keep = Math.round(m.retention * 100);
-  const left = m.fade > .8 ? '快要消散' : m.fade > .3 ? '正在消散' : '还很稳';
-  el.innerHTML =
-    '<div class="mem-k">' + chip('#' + m.id, col) + chip(TYPE_ZH[m.type] || m.type || '记忆', '#a9b4c3') +
-    chip(m.status === 'active' ? '明亮' : m.status === 'faded' ? '变暗' : '熄灭', m.status === 'active' ? '#3ce69a' : m.status === 'faded' ? '#ffb547' : '#9aa6ff') +
-    chip(m.scope || '', '#6b7685') + '</div>' +
-    '<div class="mem-t">' + (m.content || '（无正文）') + '</div>' +
-    '<div class="mem-bar"><i style="width:' + keep + '%;background:' + col + '"></i></div>' +
-    '<dl><dt>保持率</dt><dd>' + keep + '%</dd><dt>清晰度</dt><dd>' + Math.round(m.clarity * 100) + '%</dd>' +
-    '<dt>重要度</dt><dd>' + Math.round(m.importance * 100) + '%</dd><dt>半衰期</dt><dd>' + (m.halfLife == null ? '—' : m.halfLife + ' 天') + '</dd>' +
-    '<dt>强化 / 检索</dt><dd>' + (m.recallCount || 0) + ' / ' + (m.reviewCount || 0) + ' 次</dd>' +
-    '<dt>发生于</dt><dd>' + (m.eventTime || '时间不详') + '</dd><dt>距消散</dt><dd>' + left + '</dd></dl>' +
-    '<div class="mem-tip">已截停 · 点这颗星进调试台</div>';
-}
-/* 恒星卡：bot 本体 */
-function renderBot(){
-  const T = MODEL.totals || {}, nm = MODEL.botName || 'BOT';
-  const bn = $('#botName'); if (bn) { bn.textContent = nm; }
-  const bs = $('#botSub'); if (bs) bs.textContent = `记忆就是星 · ${fmt(T.all || 0)} 颗 · ${MODEL.scopeCount || 0} 个星域 · 今天新写 ${fmt(MODEL.todayNew || 0)} 颗`;
-  const bb = $('#botBright'); if (bb) bb.textContent = fmt(T.active || 0);
-  const bf = $('#botFaded'); if (bf) bf.textContent = fmt(T.faded || 0);
-  const bg = $('#botGone'); if (bg) bg.textContent = fmt(SC.absorbed);
-  const hc = $('#holeCount'); if (hc) hc.textContent = fmt(SC.absorbed);
-  const ob = $('#ovlBot'); if (ob) ob.textContent = nm;
-}
-/* 点恒星上的名字 → 去调试台设置页改 bot 名字 */
-function bindBotName(){
-  const el = $('#botName');
-  if (!el || el.__bsmBound) return;
-  el.__bsmBound = true;
-  el.title = '点这里改 bot 的名字';
-  el.addEventListener('click', () => { if (host.__nr && host.__nr.openBotSettings) host.__nr.openBotSettings(); });
-}
-function renderFeed(){
-  feedDirty = false;
-  const n = Math.max(6, Math.floor(feedEl.clientHeight / 15));
-  feedEl.innerHTML = feed.slice(0, n).map(e => `<li class="${e.kind}"><time>${e.t}</time><b style="color:${AG[e.a].col}">${AG[e.a].k}</b><em>${e.verb}</em><span>${e.text}</span></li>`).join('');
-}
-function renderCap(){
-  capDirty = false;
-  const c = caption, a = AG[c.a];
-  $('#cap').className = 'cap ' + c.kind;
-  $('#capK').textContent = a.k; $('#capK').style.color = a.col;
-  $('#capV').textContent = c.verb; $('#capT').textContent = c.text;
-  $('#mCap').innerHTML = `<b style="color:${a.col}">${a.k}</b>${c.verb} · ${c.text}`;
-}
-const heatCv = $('#heat'), heatX = heatCv.getContext('2d');
-const sparkCv = $('#spark'), sparkX = sparkCv.getContext('2d');
-// 画板被整体缩放过，按「缩放后的实际像素」出图才清楚
-function sizeCv(cv, x){ const w = cv.clientWidth || 1, h = cv.clientHeight || 1, k = clamp((window.devicePixelRatio || 1) * bs, 1, 3); cv.width = Math.round(w * k); cv.height = Math.round(h * k); x.setTransform(k, 0, 0, k, 0, 0); return [w, h]; }
-let heatWH = [1, 1], sparkWH = [1, 1];
-function heatCol(v){
-  // 暗 → 冰蓝 → 琥珀：越烧 token 越热
-  if (v < .04) return 'rgba(186,212,240,.05)';
-  if (v < 1) { const k = v; return `rgba(${Math.round(30 + 136 * k)},${Math.round(70 + 171 * k)},${Math.round(100 + 155 * k)},${(.25 + .65 * k).toFixed(2)})`; }
-  const k = clamp(v - 1, 0, .5) * 2; return `rgb(${Math.round(166 + 89 * k)},${Math.round(241 - 60 * k)},${Math.round(255 - 184 * k)})`;
-}
-function renderHeat(){
-  const [w, h] = heatWH, x = heatX, lw = 62, cols = HEATN + 1, cw = (w - lw - 6) / cols, rh = (h - 22) / 12;
-  x.clearRect(0, 0, w, h);
-  x.font = `700 9.5px ${MONO}`; x.textBaseline = 'middle';
-  for (let r = 0; r < 12; r++) {
-    const a = AG[r + 1], y = r * rh;
-    x.fillStyle = a.cur ? a.col : '#6b7685'; x.fillText(a.k, 0, y + rh / 2);
-    for (let c = 0; c < cols; c++) {
-      const v = c < HEATN ? heat[r][c] : (heatCur[r] / (TOKR[r + 1] * Math.max(.3, heatAcc)));
-      x.fillStyle = heatCol(v);
-      x.fillRect(lw + c * cw + 1, y + 1.5, cw - 2.5, rh - 3);
-    }
-  }
-  x.strokeStyle = 'rgba(166,241,255,.8)'; x.lineWidth = 1;
-  x.strokeRect(lw + HEATN * cw + .5, .5, cw - 1.5, 12 * rh - 1);
-  x.font = `500 8.5px ${MONO}`; x.fillStyle = '#6b7685'; x.textAlign = 'left';
-  x.fillText('-30s', lw, h - 8); x.textAlign = 'right'; x.fillStyle = '#a6f1ff'; x.fillText('NOW', w - 6, h - 8); x.textAlign = 'left';
-  x.fillStyle = '#6b7685'; x.fillText('token / 满速', lw + cw * 4, h - 8);
-}
-function renderSpark(){
-  const [w, h] = sparkWH, x = sparkX, n = rateBins.length, mx = Math.max(6, ...rateBins);
-  x.clearRect(0, 0, w, h);
-  x.strokeStyle = 'rgba(186,212,240,.12)'; x.lineWidth = 1;
-  for (let k = 1; k < 3; k++) { x.beginPath(); x.moveTo(0, h * k / 3 + .5); x.lineTo(w, h * k / 3 + .5); x.stroke(); }
-  const pt = i => [i / (n - 1) * (w - 4), h - 3 - rateBins[i] / mx * (h - 8)];
-  const g = x.createLinearGradient(0, 0, 0, h); g.addColorStop(0, 'rgba(166,241,255,.28)'); g.addColorStop(1, 'rgba(166,241,255,0)');
-  x.beginPath(); x.moveTo(0, h); for (let i = 0; i < n; i++) x.lineTo(...pt(i)); x.lineTo(w - 4, h); x.closePath(); x.fillStyle = g; x.fill();
-  x.beginPath(); for (let i = 0; i < n; i++) { const [px, py] = pt(i); i ? x.lineTo(px, py) : x.moveTo(px, py); } x.strokeStyle = '#a6f1ff'; x.lineWidth = 1.2; x.stroke();
-  const [ex, ey] = pt(n - 1); x.fillStyle = '#fff'; x.beginPath(); x.arc(ex, ey, 2.4, 0, TAU); x.fill();
-}
-let fps = 60, fpsN = 0, fpsT = 0, lowT = 0, autoNote = '';
-function renderBottom(){
-  const T = MODEL.totals || {};
-  $('#bTopo').innerHTML = `${fmt(T.all || 0)}<small>颗星</small>`;
-  $('#bTopoS').innerHTML = `<b>${MODEL.scopeCount || 0}</b> 星域 · 明亮 <b>${T.active || 0}</b> · 变暗 <b>${T.faded || 0}</b>`;
-  $('#bRate').innerHTML = `${rateBins[rateBins.length - 1]}<small>次/秒</small>`;
-  $('#bOut').textContent = fmt(total);
-  const pct = DAY_TARGET ? total / DAY_TARGET : 0;
-  $('#bOutS').innerHTML = `今日新星 · 目标 <b>${fmt(DAY_TARGET)}</b> · <b>${(pct * 100).toFixed(1)}%</b> · 在跑 <b>${liveN()}</b>`;
-  $('#bOutBar').style.width = (Math.min(1, pct) * 100).toFixed(2) + '%';
-  const keep = (MODEL.avgRetention == null ? 0 : MODEL.avgRetention * 100);
-  $('#bPass').textContent = keep.toFixed(1) + '%';
-  $('#bPassS').innerHTML = `召回 <b>${passN}</b> · 归档 <b>${failN}</b> · 强化 <b>${reinforced}</b>`;
-  const perMin = tokWin.reduce((p, v) => p + v, 0);
-  $('#bTok').textContent = fmtTok(tokDay);
-  $('#bTokS').innerHTML = `情绪残留 · 心绪 <b>${(MODEL.mood || {}).valence == null ? '—' : (MODEL.mood.valence).toFixed(2)}</b> · 唤起 <b>${(MODEL.mood || {}).arousal == null ? '—' : (MODEL.mood.arousal).toFixed(2)}</b>`;
-  $('#bFps').innerHTML = glOK ? `${fps}<small>fps</small>` : '—';
-  $('#bFpsS').innerHTML = glOK ? `${MODES[modeI].zh} · DPR <b>${pr.toFixed(2)}</b>${autoNote}` : 'WebGL 不可用';
-  $('#bRateS').innerHTML = `想起 · 接手 · 交接 · 强化 · 在飞 <b>${inFlight()}</b>`;
-  const cwP = $('#cwP'); if (cwP) cwP.textContent = fmt(crawl.patrols);
-  const cwR = $('#cwR'); if (cwR) cwR.textContent = fmt(crawl.read);
-  const cwB = $('#cwB'); if (cwB) cwB.textContent = crawl.bugs;
-  const cwF = $('#cwF'); if (cwF) cwF.textContent = failN;
-  const ta = AG[crawl.target], cwNow = $('#cwNow');
-  if (cwNow) cwNow.innerHTML = `<b>${probe.u < 1 ? '飞往' : '正在看'}</b>${ta.k} ${ta.zh}${ta.cur ? ' · ' + ta.cur.id + ' ' + ta.cur.name : ' · 待命'}`;
-  $('#feedMeta').textContent = `${inFlight()} in flight · ${tasks.length} open`;
-  $('#mOut').textContent = fmt(total); $('#mLive').textContent = `${liveN()} / 12`; $('#mTok').textContent = fmtTok(tokDay);
-}
-function clockTick(){ $('#clock').textContent = hms(new Date()); }
-
-/* ---------- HUD 画布：扇区 + 通道环、文字带 ---------- */
-function drawAt(c, x, y, flip, fn){ for (const xx of [x, x - RW, x + RW]) { if (xx < -420 || xx > RW + 420) continue; c.save(); c.translate(xx, y); if (flip) c.rotate(Math.PI); fn(c); c.restore(); } }
-const spinA = () => spin ? spin.rotation.z : 0;
-function drawRing(){
-  if (!glOK) return;
-  const c = ringCtx; c.clearRect(0, 0, RW, RH);
-  // 外圈刻度
-  c.fillStyle = 'rgba(200,225,255,.22)';
-  for (let x = 0; x < RW; x += 16) c.fillRect(x, 2, 1.5, x % 128 === 0 ? 9 : 4);
-  c.fillRect(0, 44, RW, 1);
-  // 通道
-  CH.forEach((ch, j) => {
-    const th = chanAng[j], f = chanFlash[j];
-    drawAt(c, uOf(th) * RW, 25, Math.sin(th + spinA()) < 0, q => {
-      q.strokeStyle = rgba(ch.col, .5 + .5 * f); q.lineWidth = 2;
-      q.beginPath(); q.moveTo(-150, -9); q.lineTo(-150, -13); q.lineTo(150, -13); q.lineTo(150, -9); q.moveTo(-150, 9); q.lineTo(-150, 13); q.lineTo(150, 13); q.lineTo(150, 9); q.stroke();
-      if (f > .02) { q.fillStyle = rgba(ch.col, .32 * f); q.fillRect(-150, -13, 300, 26); }
-      q.font = `700 17px ${MONO}`; q.textAlign = 'center'; q.textBaseline = 'middle';
-      q.fillStyle = f > .3 ? '#ffffff' : 'rgba(225,236,250,.82)';
-      q.fillText(`${ch.en} ${ch.zh} · ${fmt(chanN[j])}`, 0, 1);
-    });
-  });
-  // 智能体扇区
-  const sw = RW / NCL;
-  for (let k = 0; k < NCL; k++) {
-    const a = AG[k], th = secAng(k), on = k === 0 || !!a.cur, flip = Math.sin(th + spinA()) < -1e-4;
-    const prog = k === 0 ? 1 - clamp(chiefT / chiefDur, 0, 1) : a.cur ? a.prog : 0, hit = clamp(a.hitT, 0, 1);
-    drawAt(c, uOf(th) * RW, 78, flip, q => {
-      const w = sw * .93, y0 = 26;
-      if (hit > 0) { q.fillStyle = rgba(a.col, .12 * hit); q.fillRect(-w / 2, -30, w, 60); }
-      q.fillStyle = 'rgba(200,225,255,.14)'; q.fillRect(-w / 2, y0, w, 4);
-      q.fillStyle = a.bad > .05 ? rgba('#ff4d5e', .6 + .4 * a.bad) : rgba(a.col, on ? .95 : .4);
-      q.fillRect(-w / 2, y0, w * (on ? prog : 0), 4);
-      q.fillStyle = rgba(a.col, .9); q.fillRect(-w / 2, -24, 3, 46);
-      q.textBaseline = 'middle'; q.textAlign = 'left';
-      q.font = `800 24px ${MONO}`; q.fillStyle = on ? '#ffffff' : 'rgba(225,236,250,.5)';
-      q.fillText(a.k, -w / 2 + 14, -10);
-      const kw = q.measureText(a.k).width;
-      q.font = `500 19px ${CJK}`; q.fillStyle = on ? 'rgba(225,236,250,.8)' : 'rgba(225,236,250,.4)';
-      q.fillText(a.zh, -w / 2 + 24 + kw, -9);
-      q.font = `500 15px ${MONO}`; q.fillStyle = 'rgba(200,220,240,.62)';
-      const st = k === 0 ? `DISPATCH ${lastDispatch}` : a.cur ? `${a.cur.id} · ${Math.round(a.prog * 100)}%` : a.inbox.length ? `QUEUE ${a.inbox.length}` : 'IDLE';
-      q.fillText(st, -w / 2 + 14, 13);
-      q.textAlign = 'right';
-      for (let p = 0; p < Math.min(6, a.inbox.length); p++) { q.fillStyle = rgba(a.col, .85); q.fillRect(w / 2 - 12 - p * 11, 8, 7, 7); }
-    });
-  }
-  ringTex.needsUpdate = true;
-}
-function drawTape(){
-  if (!glOK) return;
-  tapeDirty = false;
-  const c = tapeCtx; c.clearRect(0, 0, TW, TH);
-  c.font = `500 18px ${MONO}`; c.textBaseline = 'middle';
-  const items = tape.length ? tape : ['CHIEF 派单 T-040 口播短视频 → SCOUT'];
-  let x = 6, k = 0;
-  while (x < TW) {
-    const s = items[k % items.length]; k++;
-    c.fillStyle = 'rgba(166,241,255,.85)'; c.fillRect(x, 9, 2, 14);
-    c.fillStyle = 'rgba(225,236,250,.78)'; c.fillText(s, x + 10, 16.5);
-    x += c.measureText(s).width + 40;
-    c.fillStyle = 'rgba(200,225,255,.3)'; for (let t = 0; t < 4; t++) c.fillRect(x - 26 + t * 5, 14, 2, 5);
-    if (k > 200) break;
-  }
-  tapeTex.needsUpdate = true;
-}
 
 /* ================= 5. 主循环 ================= */
+let fps = 60, fpsN = 0, fpsT = 0, lowT = 0, autoNote = '';
 let focus = -1, hover = -1, needsT = 1, uiAcc = 0, tapeAcc = 0, lastNow = performance.now();
 const SIGBUF = 4000;
 const TRMAX = 6000;
@@ -1330,46 +1128,11 @@ function updateScene(dt){
   // 探针拖尾
   probe.trail.unshift(probe.p.clone()); if (probe.trail.length > 16) probe.trail.pop();
   writeSignals();
-  // HUD 转动
-  spin.rotation.z = sceneT * .035;                     // 约 3 分钟转一圈
-  tickA.rotation.z = animT * .02; tickB.rotation.z = -animT * .008;
-  tapeRing.rotation.z = -animT * .028; dashRing.rotation.z = animT * .05;
-  arcsA.rotation.z = animT * .09; arcsB.rotation.z = -animT * .06;
-  sweep.rotation.z = -animT * .85;
-  barcode.rotation.z = -(slotHead + slotAcc / SEG_SLOT) * (TAU / NSEG);
-  const bc = barcode.geometry.attributes.color.array, cur = slotHead % NSEG;
-  const SA = TAU / NSEG, rot = barcode.rotation.z;
-  for (let s = 0; s < NSEG; s++) {
-    slotDisp[s] += (slotVals[s] - slotDisp[s]) * (1 - Math.exp(-dt * 5));
-    const v = slotDisp[s], live = s === cur;
-    // 这一格此刻转到了哪个智能体的扇区下面
-    const th = Math.PI / 2 + s * SA + rot;
-    const ag = ((Math.round((Math.PI / 2 + spin.rotation.z - th) / SEC_A) % NCL) + NCL) % NCL, A = AG[ag], ac = AGC[ag];
-    const load = ag === 0 ? .5 : A.cur ? .55 + .45 * A.prog : A.inbox.length ? .22 : .06;
-    // 均衡器式跳动：扇区里的智能体越忙，跳得越高越快
-    const jit = load * (.55 + .45 * Math.sin(animT * (1.1 + ((s * 7) % 6) * .22) + s * 2.3)) * 1.8;
-    // 两道充能波沿环反向扫过
-    const w = Math.exp(-(wrapPI(th - animT * .42) ** 2) / .045) + Math.exp(-(wrapPI(th + animT * .27 + 2.1) ** 2) / .03);
-    const lit = Math.min(6, v * 4.8 + jit + w * 2.2);
-    const tint = (A.cur || ag === 0) ? .35 * load : 0;
-    for (let k = 0; k < 6; k++) {
-      // 外圈那道常亮当底座，往圆心方向充能（k=0 是最里面那道）
-      const dim = slotDims[s] ? slotDims[s][k] : 0;
-      const on = Math.max(clamp(lit - (5 - k), 0, 1) * .3, dim);
-      let r, g, b;
-      if (v > .86 && k === 0) { r = 1; g = .66; b = .26; }
-      else { r = .78 + (ac[0] - .78) * tint; g = .9 + (ac[1] - .9) * tint; b = 1 + (ac[2] - 1) * tint; }
-      let br = .07 + on * (live ? .75 + .25 * Math.sin(animT * 6) : .85) * (1 + w * .6);
-      const fl = segFlash[s];
-      if (fl > .01) { const fc = segCol[s], mk = fl * .7; r += (fc[0] - r) * mk; g += (fc[1] - g) * mk; b += (fc[2] - b) * mk; br = Math.max(br, fl * 1.5); }
-      for (let q = 0; q < 4; q++) { const o = ((s * 6 + k) * 4 + q) * 3; bc[o] = r * br; bc[o + 1] = g * br; bc[o + 2] = b * br; }
-    }
-  }
-  barcode.geometry.attributes.color.needsUpdate = true;
+  // 整体自转（悬停时停住，见 frame）
+  spin.rotation.z = spinZ * .035;                      // 约 3 分钟转一圈
+  const SA = TAU / NSEG;
   for (let s = 0; s < NSEG; s++) segFlash[s] *= Math.exp(-dt * 3.2);
-  hits.forEach(h => { if (!h.s.visible) return; h.t += dt; const k = h.t / .55; if (k >= 1) { h.s.visible = false; return; } h.s.scale.setScalar(.1 + .32 * k); h.s.material.opacity = 1 - k; });
-  coreSpr.material.opacity = .1 + AF[0] * .14 + boost * .05;
-  chanSpr.forEach((s, j) => { const f = chanFlash[j]; s.material.opacity = f; s.scale.setScalar(.12 + .55 * f); });
+  if (coreSpr) coreSpr.material.opacity = .1 + AF[0] * .14 + boost * .05;
   scans.forEach(s => { if (!s.m.visible) return; s.t += dt; const k = s.t / 1.2; if (k >= 1) { s.m.visible = false; return; } s.m.scale.setScalar(.07 + .38 * k); s.m.material.opacity = (1 - k) * .9; s.m.lookAt(camera.position); });
   streaks.material.uniforms.uTime.value = animT; streaks.material.uniforms.uBoost.value = boost;
   dust.rotation.y = animT * .004; dust.rotation.x = animT * .002;
@@ -1378,15 +1141,15 @@ function updateScene(dt){
   for (let g = 1; g < SC.n; g++) {
     const m = SC.mem[g - 1], spr = SC.memSpr && SC.memSpr[g - 1];
     if (!m || !spr) continue;
-    const c = CL[g], ang = sceneT * (SC.osp[g] || 0) * (1 - m.fade);
-    const ca = Math.cos(ang), sa = Math.sin(ang);
-    spr.position.set(c.x * ca - c.y * sa, c.x * sa + c.y * ca, c.z);
+    const p = starPos(g, _sp);
+    spr.position.set(p.x, p.y, p.z);
     const br = clamp(AF[g * 2], 0, 1.2);
     const col = SC.col[g] || [1, 1, 1];
     spr.material.color.setRGB(col[0], col[1], col[2]);
     spr.material.opacity = clamp((1 - m.fade * .92) * (.22 + br * .9), 0, 1);
     spr.scale.setScalar((.052 + (m.importance || 0) * .045) * (.8 + br * .55) * (1 + m.fade * .6));
   }
+  updateLinks();
   // 黑洞：事件视界（移植「视界熔炉」）
   SC.holePulse = Math.max(0, (SC.holePulse || 0) - dt * .55);
   syncHole(W * pr, H * pr);
@@ -1414,21 +1177,21 @@ function frame(now){
   const heldNow = (hover >= 0 && hover < SC.n) ? hover : -1;
   if (heldNow !== SC.held) {
     SC.held = heldNow;
+    if (heldNow >= 0 && heldNow < SC.n) {
+      // 把被悬停这颗星此刻的轨道角记下来：它就此钉住，其余星星照常绕恒星转
+      const m = SC.mem[heldNow - 1];
+      SC.holdAng = (sceneT * (SC.osp[heldNow] || 0) + (SC.oph ? SC.oph[heldNow] : 0)) * (1 - (m ? clamp(m.fade, 0, 1) : 0));
+      if (SC.uni) SC.uni.uHoldAng.value = SC.holdAng;
+    }
     if (SC.uni) { SC.uni.uHold.value = heldNow; SC.uni.uHoldT.value = animT; }
   }
   if (!paused) { simStep(dt); decay(dt); animT += dt; }
-  if (heldNow < 0) sceneT += dt;                          // 截停时星海不转，镜头也不飘
-  uiAcc += dt; tapeAcc += dt;
-  if (uiAcc >= .25) {
-    uiAcc = 0;
-    renderList(); renderBottom(); renderHeat(); renderSpark(); renderMem(); renderBot();
-    if (feedDirty) renderFeed();
-    if (capDirty) renderCap();
-    if (tapeDirty && tapeAcc > 1) { tapeAcc = 0; drawTape(); }
-  }
+  sceneT += dt;                                           // 轨道时钟一直走：只有被悬停的那颗星停住
+  if (heldNow < 0) { camT += dt; spinZ += dt; }           // 悬停时镜头与整体自转停住
+  uiAcc += dt;
   if (!glOK) return;
   if (cam.userT > 0) cam.userT -= dt; else { cam.yaw *= Math.exp(-dt * .7); cam.pitch *= Math.exp(-dt * .7); }
-  camWant(sceneT);
+  camWant(camT);
   const k = 1 - Math.exp(-dt * 1.5);
   cam.pos.lerp(cam.want, k); cam.tgt.lerp(cam.wantT, k);
   const moving = cam.pos.distanceToSquared(cam.want) > 1e-5 || cam.userT > 0;
@@ -1453,26 +1216,17 @@ function layout(){
   const r = host.getBoundingClientRect();
   W = Math.max(1, r.width); H = Math.max(1, r.height);
   narrow = W < 760 || W / H < 1.05;
-  nr.classList.toggle('narrow', narrow);
-  const fr = fitIn.getBoundingClientRect();
-  bs = Math.min(fr.width / 1920, fr.height / 1080);
-  // 画板不锁 16:9：宽度或高度多出来的部分直接让画板变大，四周的面板贴着屏幕边
-  const BW = fr.width / bs, BH = fr.height / bs;
-  board.style.width = BW + 'px'; board.style.height = BH + 'px';
-  board.style.setProperty('--s', bs);
-  rowY = rows.map(r => r ? r.el.offsetTop + r.el.offsetHeight / 2 : 0);
-  heatWH = sizeCv(heatCv, heatX); sparkWH = sizeCv(sparkCv, sparkX);
-  if (feed.length) renderFeed();
+  if (nr) nr.classList.toggle('narrow', narrow);
   if (!glOK) return;
   renderer.setPixelRatio(pr); renderer.setSize(W, H, false);
   if (composer) { composer.setPixelRatio(pr); composer.setSize(W, H); }
   camera.aspect = W / H;
-  const t = Math.tan(camera.fov * Math.PI / 360), Rr = 2.95;
-  if (narrow) { fitD = Math.max(Rr * H / (.94 * W * t), Rr / (.6 * t)); camera.setViewOffset(W, H, 0, H * .02, W, H); }
-  else { const ringPx = Math.min(BH * .9, BW - 900) * bs; fitD = Rr * H / (ringPx * t); camera.setViewOffset(W, H, 0, 30 * bs, W, H); }
+  // 整屏星场：取景半径 = 记忆星团 + 远处那颗黑洞
+  const t = Math.tan(camera.fov * Math.PI / 360), Rr = 2.15;
+  fitD = Rr * H / (Math.min(H, W * .95) * t);
+  camera.clearViewOffset();
   camera.updateProjectionMatrix();
   if (SC.lines) SC.lines.material.uniforms.uPx.value = H * pr / (2 * t);
-  // 星环在屏幕上越小，线条叠得越密，按尺寸减淡，免得小屏糊成一团白
   sizeGain = clamp(Rr * H / (fitD * t) / 900, .32, 1);
   needsT = .6;
 }
@@ -1484,7 +1238,7 @@ function pickAt(x, y){
   if (!glOK) return -1;
   let best = -1, bd = 46 * 46;
   const test = (i, p) => { const [sx, sy] = screenOf(p); const d = (sx - x) ** 2 + (sy - y) ** 2; if (d < bd) { bd = d; best = i; } };
-  for (let i = 0; i < SC.n; i++) test(i, CL[i]);
+  for (let i = 0; i < SC.n; i++) test(i, starPos(i, _sp));
   return best;
 }
 function showTip(i){
@@ -1505,7 +1259,7 @@ function showTip(i){
       `<span class="h">${focus === i ? '已钉住 · 再点一次取消' : '已截停 · 点一下进调试台看完整档案'}</span>`;
   }
   tip.hidden = false;
-  const [sx, sy] = screenOf(CL[i]);
+  const [sx, sy] = screenOf(starPos(i, _sp));
   const tw = tip.offsetWidth, th = tip.offsetHeight;
   let x = sx + 18, y = sy - th / 2;
   if (x + tw > W - 12) x = sx - tw - 18;
@@ -1561,19 +1315,6 @@ document.addEventListener('keydown', e => {
 });
 
 /* ================= 6. 接真实数据：星域 / 星星 / 计数 / 星环 ================= */
-function refreshRows(){
-  AG.forEach((a, i) => {
-    const r = rows[i]; if (!r) return;
-    // 没有记忆的星域不占位（恒星已经单独一张卡了）
-    const empty = i >= 1 && i < 1 + SCOPE_SLOTS && a.k === 'IDLE';
-    r.el.style.display = empty ? 'none' : '';
-    if (empty) return;
-    r.el.style.setProperty('--c', a.col);
-    const kEl = r.el.querySelector('.k'), zEl = r.el.querySelector('.z');
-    if (kEl) kEl.textContent = a.k;
-    if (zEl) zEl.textContent = `${a.zh} · ${a.role}`;
-  });
-}
 function setModel(m){
   if (!m) return;
   Object.assign(MODEL, m);
@@ -1687,13 +1428,6 @@ function setModel(m){
     if (a) a.grps.push(i + 1);
   });
   if (glOK) buildBrain();
-
-  refreshRows();
-  $('#ltMeta').textContent = ltMetaText();
-  renderList(); renderBottom(); renderHeat(); renderSpark(); renderMem(); renderBot();
-  if (feedDirty) renderFeed();
-  if (capDirty) renderCap();
-  tapeDirty = true;
 }
 
 /* ---------- 开场 ---------- */
@@ -1717,17 +1451,14 @@ if (starPool.length) {
 AG.forEach(a => a.hitT = 0);
 new ResizeObserver(() => layout()).observe(host);
 layout();
-if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { drawTape(); layout(); });
-drawTape(); renderList(); renderFeed(); renderCap(); renderBottom(); renderHeat(); renderSpark(); renderMem(); renderBot(); bindBotName();
-clockTick(); setInterval(clockTick, 1000);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { layout(); });
 syncButtons();
 // 调试用：快进模拟若干秒（控制台里 document.getElementById('host-neural').__nr.ff(20)）
 host.__nr = {ff(sec){ for (let t = 0; t < sec; t += .05) { simStep(.05); decay(.05); animT += .05; } needsT = 1; },
               setModel, model: MODEL, feed, tasks, stars: starPool, ag: AG,
               /* 给自动化探针用 */
-              starScreen(){ return SC.mem.map((m, i) => { const g = i + 1, c = CL[g];
-                              const ang = sceneT * (SC.osp[g] || 0) * (1 - m.fade), ca = Math.cos(ang), sa = Math.sin(ang);
-                              const p = screenOf(new THREE.Vector3(c.x * ca - c.y * sa, c.x * sa + c.y * ca, c.z));
+              starScreen(){ return SC.mem.map((m, i) => { const g = i + 1, q = starPos(g, _sp);
+                              const p = screenOf(new THREE.Vector3(q.x, q.y, q.z));
                               return {id: m.id, x: p[0], y: p[1], fade: m.fade, status: m.status, scope: m.scope}; }); },
               marks(){ if (!glOK) return null; const b = screenOf(CL[0]), h = screenOf(SC.holePos || CL[0]);
                        return {bot: {x: b[0], y: b[1]}, hole: {x: h[0], y: h[1]}, groups: SC.n, mems: SC.mem.length, absorbed: SC.absorbed,
@@ -1735,7 +1466,9 @@ host.__nr = {ff(sec){ for (let t = 0; t < sec; t += .05) { simStep(.05); decay(.
                                 holeDbg: SC.holeUni ? {inScene: !!SC.hole.parent, vis: SC.hole.visible,
                                   ctr: [SC.holeUni.uCtr.value.x, SC.holeUni.uCtr.value.y], r: SC.holeUni.uR.value,
                                   half: SC.holeUni.uHalf.value, res: [SC.holeUni.uRes.value.x, SC.holeUni.uRes.value.y],
-                                  alpha: SC.holeUni.uAlpha.value} : null}; },
+                                  alpha: SC.holeUni.uAlpha.value} : null,
+                                links: SC.linkPairs ? SC.linkPairs.length : 0,
+                                linkGroups: SC.linkPairs ? SC.linkPairs.map(q => q[0] + '-' + q[1]).slice(0, 10) : []};},
               probe3d(){ if (!glOK) return null; const RW = 320, RH = 180, rt = new THREE.WebGLRenderTarget(RW, RH);
                         const old = renderer.getRenderTarget(); renderer.setRenderTarget(rt);
                         syncHole(RW, RH); renderer.render(scene, camera);
