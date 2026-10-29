@@ -31,7 +31,12 @@
     try {
       var t = document.getElementById("toast");
       if (t) {
-        t.textContent = "脚本异常：" + e.message;
+        var msg = e.message || "(没有错误详情)";
+        // 浏览器对**跨源脚本**（以及被沙箱化的 iframe）只给一句 "Script error."，不给细节
+        if (msg === "Script error." || msg === "Script error") {
+          msg = "有脚本没跑起来（浏览器出于跨源安全没给细节），请按 F12 看控制台第一行红色报错";
+        }
+        t.textContent = "脚本异常：" + msg;
         t.classList.add("is-err");
         t.classList.remove("hidden");
       }

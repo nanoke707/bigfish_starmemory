@@ -12,20 +12,15 @@
 /* three.js 从哪来：**先本地副本**（views/console/vendor/three.min.js），再退回 CDN。
    —— 之前只走 CDN，内网 / 离线 / 被代理拦住的机器就永远加载不到，
    整块 3D 直接不显示（用户报的"WebGL 不可用"其实是 three.js 没到）。
-   辉光（postprocessing）那几个文件只走 CDN，**拿不到就跳过**：没有辉光也能正常出画面。 */
+   ⚠️ **只加载这一个文件**：three 的 examples/postprocessing 那套辉光脚本**不再从 CDN 取**
+   （D19）。原因有二：① 它们**互相依赖**（Pass.js / MaskPass.js 没列全就会在跨源脚本里抛错，
+   浏览器只报一句 "Script error."，什么都定位不了）；② 跨源脚本一报错整页都跟着报错。
+   现在辉光改用**本地自己写的**（见 setupBloom），**整页零外网依赖**。 */
 var BSM_THREE_CDN = "https://cdn.jsdelivr.net/npm/three@0.147.0/";
 var BSM_THREE_DEPS = [
-  {local: "./vendor/three.min.js", cdn: BSM_THREE_CDN + "build/three.min.js", must: true},
-  {cdn: BSM_THREE_CDN + "examples/js/shaders/CopyShader.js"},
-  {cdn: BSM_THREE_CDN + "examples/js/shaders/LuminosityHighPassShader.js"},
-  {cdn: BSM_THREE_CDN + "examples/js/postprocessing/EffectComposer.js"},
-  {cdn: BSM_THREE_CDN + "examples/js/postprocessing/RenderPass.js"},
-  {cdn: BSM_THREE_CDN + "examples/js/postprocessing/ShaderPass.js"},
-  {cdn: BSM_THREE_CDN + "examples/js/postprocessing/UnrealBloomPass.js"}
+  {local: "./vendor/three.min.js", cdn: BSM_THREE_CDN + "build/three.min.js", must: true}
 ];
 var BSM_LOAD_T_MUST = 8000;      // 必需文件的等待上限（本地副本正常是毫秒级）
-var BSM_LOAD_T_OPT = 2500;       // 可选文件（辉光）的等待上限：CDN 不通也别把页面拖死
-var BSM_OPT_SKIP_KEY = "bsm_cdn_bloom_unreachable";   // 记下"CDN 不通"，以后就不试了
 
 function BSM_loadOne(src, ms) {
   return new Promise(function (res) {
@@ -35,24 +30,14 @@ function BSM_loadOne(src, ms) {
     s.src = src; s.async = false;
     s.onload = function () { fin(true); };
     s.onerror = function () { fin(false); };
-    setTimeout(function () { fin(false); }, ms || BSM_LOAD_T_OPT);
+    setTimeout(function () { fin(false); }, ms || BSM_LOAD_T_MUST);
     document.head.appendChild(s);
   });
 }
 
 function BSM_loadScripts(list) {
   var arr = (list || []).map(function (d) { return typeof d === "string" ? {cdn: d} : d; });
-  var must = arr.filter(function (d) { return d.must; });
-  var opt = arr.filter(function (d) { return !d.must; });
-  var skipOpt = false;
-  try {                                  // 记下"CDN 不通"，6 小时内不再试（网络可能恢复）
-    var ts = parseInt(localStorage.getItem(BSM_OPT_SKIP_KEY) || "0", 10);
-    skipOpt = ts > 0 && (Date.now() - ts) < 6 * 3600 * 1000;
-  } catch (_) {}
-  if (skipOpt) opt = [];
-  // 可选项与必需项**同时**开始加载 → 总耗时 = 最慢的那个，不是相加
-  var pOpt = Promise.all(opt.map(function (d) { return BSM_loadOne(d.cdn, BSM_LOAD_T_OPT); }));
-  var chain = must.reduce(function (p, d) {
+  var chain = arr.reduce(function (p, d) {
     return p.then(function () {
       return (d.local ? BSM_loadOne(d.local, BSM_LOAD_T_MUST) : Promise.resolve(false)).then(function (ok) {
         return ok ? true : (d.cdn ? BSM_loadOne(d.cdn, BSM_LOAD_T_MUST) : false);
@@ -61,14 +46,6 @@ function BSM_loadScripts(list) {
   }, Promise.resolve());
   return chain.then(function (ok) {
     if (!ok) throw new Error("three.js 加载失败（本地副本与 CDN 都不通）");
-    // 可选项**不阻塞挂载**：它们晚到也没关系，到了再补辉光（见 setupBloom）
-    pOpt.then(function (r) {
-      if (opt.length && !r.some(Boolean)) {          // 辉光那几个一个都没到 → 记下来，下次不再试
-        try { localStorage.setItem(BSM_OPT_SKIP_KEY, String(Date.now())); } catch (_) {}
-      } else if (r.some(Boolean) && window.BSMNeural && window.BSMNeural.onOptionalReady) {
-        window.BSMNeural.onOptionalReady();
-      }
-    });
     return true;
   });
 }
@@ -76,7 +53,6 @@ function BSM_loadScripts(list) {
 window.BSMNeural = {
   deps: BSM_THREE_DEPS,
   loadScripts: BSM_loadScripts,
-  onOptionalReady: null,          // 可选依赖（辉光）到位后回调，用来补接辉光
   mount: mountNeural
 };
 
@@ -383,7 +359,7 @@ function simStep(dt){
 /* ================= 3. 3D 场景 ================= */
 const THREE = window.THREE;
 const cv = $('#gl');
-let renderer = null, scene, camera, composer = null, bloomPass = null, world, hud, spin;   // spin：神经网 + 智能体扇区环，一起慢转
+let renderer = null, scene, camera, bloom = null, world, hud, spin;   // spin：神经网 + 智能体扇区环，一起慢转
 let trGeo, coreSpr, brainLines, brainPts, sigGeo, sigMat, streaks, dust;
 let ringTex, tapeTex, ringCtx, tapeCtx;
 const AF = new Float32Array(AFG * 2);                   // 每组 (活跃度, 聚焦系数)：0 恒星，1..M 记忆星，M+1 背景，之后是突触束
@@ -1022,29 +998,112 @@ try {
   buildHud();
   buildSky();
   glOK = true;
-  setupBloom();                     // 辉光文件在的话就接上（不在也能正常出画面）
+  setupBloom();                     // 接上本地辉光（接不上也只是没有辉光，不影响出画面）
 } catch (e) {
   console.error(e);
   showGlFail(e);
 }
 
-/* 接上辉光：three 的 postprocessing 文件可能晚到（CDN），到了再补上也行 */
+/* ---------- 本地辉光（自己写的，不依赖 three 的 examples/postprocessing） ----------
+   管线：场景 → sceneRT → 亮部提取(1/4 分辨率) → 横向模糊 → 纵向模糊 → 叠加输出到画布。
+   为什么不用 three 自带的 UnrealBloomPass：那几个文件在 examples/ 下、互相依赖、
+   只能从 CDN 取；跨源脚本一报错浏览器只给一句 "Script error."，根本定位不了。 */
 function setupBloom(){
-  if (!glOK || composer || !window.THREE) return;
-  if (!THREE.EffectComposer || !THREE.UnrealBloomPass || !THREE.RenderPass) { bloomOn = false; return; }
+  if (!glOK || bloom || !window.THREE) return;
   try {
-    composer = new THREE.EffectComposer(renderer);
-    composer.addPass(new THREE.RenderPass(scene, camera));
-    bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(512, 512), .62, .42, .3);
-    composer.addPass(bloomPass);
-    bloomOn = true;
-    if (W > 1) { composer.setPixelRatio(pr); composer.setSize(W, H); }
-    needsT = 1;
-  } catch (e) { console.error(e); composer = null; bloomOn = false; }
-}
-/* CDN 上的辉光文件晚到时回调这里 */
-if (window.BSMNeural) window.BSMNeural.onOptionalReady = function () { setupBloom(); };
+    const V2 = THREE.Vector2;
+    const rtOpt = {minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+                   format: THREE.RGBAFormat, type: THREE.UnsignedByteType, depthBuffer: false, stencilBuffer: false};
+    const sceneRT = new THREE.WebGLRenderTarget(2, 2, Object.assign({}, rtOpt, {depthBuffer: true}));
+    const a = new THREE.WebGLRenderTarget(2, 2, rtOpt);
+    const b = new THREE.WebGLRenderTarget(2, 2, rtOpt);
 
+    const VS = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
+    const bright = new THREE.ShaderMaterial({
+      uniforms: {tSrc: {value: null}, uTexel: {value: new V2()}, uThr: {value: .55}, uKnee: {value: .35}},
+      vertexShader: VS,
+      fragmentShader: [
+        'uniform sampler2D tSrc; uniform vec2 uTexel; uniform float uThr; uniform float uKnee; varying vec2 vUv;',
+        'void main(){',
+        '  vec3 c = texture2D(tSrc, vUv).rgb * .25',
+        '       + texture2D(tSrc, vUv + vec2( uTexel.x,  uTexel.y)).rgb * .1875',
+        '       + texture2D(tSrc, vUv + vec2(-uTexel.x,  uTexel.y)).rgb * .1875',
+        '       + texture2D(tSrc, vUv + vec2( uTexel.x, -uTexel.y)).rgb * .1875',
+        '       + texture2D(tSrc, vUv + vec2(-uTexel.x, -uTexel.y)).rgb * .1875;',
+        '  float l = dot(c, vec3(.2126, .7152, .0722));',
+        '  gl_FragColor = vec4(c * smoothstep(uThr, uThr + uKnee, l), 1.0);',
+        '}'
+      ].join('\n'), depthTest: false, depthWrite: false
+    });
+    const blur = new THREE.ShaderMaterial({
+      uniforms: {tSrc: {value: null}, uDir: {value: new V2()}},
+      vertexShader: VS,
+      fragmentShader: [
+        'uniform sampler2D tSrc; uniform vec2 uDir; varying vec2 vUv;',
+        'void main(){',
+        '  vec3 s = texture2D(tSrc, vUv).rgb * .227027;',
+        '  s += (texture2D(tSrc, vUv + uDir * 1.3846154).rgb + texture2D(tSrc, vUv - uDir * 1.3846154).rgb) * .3162162;',
+        '  s += (texture2D(tSrc, vUv + uDir * 3.2307692).rgb + texture2D(tSrc, vUv - uDir * 3.2307692).rgb) * .0702703;',
+        '  gl_FragColor = vec4(s, 1.0);',
+        '}'
+      ].join('\n'), depthTest: false, depthWrite: false
+    });
+    const comp = new THREE.ShaderMaterial({
+      uniforms: {tScene: {value: null}, tBloom: {value: null}, uStr: {value: .62}},
+      vertexShader: VS,
+      fragmentShader: [
+        'uniform sampler2D tScene; uniform sampler2D tBloom; uniform float uStr; varying vec2 vUv;',
+        'void main(){',
+        '  gl_FragColor = vec4(texture2D(tScene, vUv).rgb + texture2D(tBloom, vUv).rgb * uStr, 1.0);',
+        '}'
+      ].join('\n'), depthTest: false, depthWrite: false
+    });
+
+    // 全屏三角形
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1,-1,0, 3,-1,0, -1,3,0]), 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array([0,0, 2,0, 0,2]), 2));
+    const quad = new THREE.Mesh(geo, bright);
+    quad.frustumCulled = false;
+    const qScene = new THREE.Scene(); qScene.add(quad);
+    const qCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    bloom = {sceneRT: sceneRT, a: a, b: b, quad: quad, qScene: qScene, qCam: qCam,
+             bright: bright, blur: blur, comp: comp, w: 2, h: 2};
+    bloomOn = true;
+    resizeBloom();
+  } catch (e) {
+    console.warn('[neural] 本地辉光不可用：', e);
+    bloom = null; bloomOn = false;
+  }
+}
+
+/* 辉光的渲染目标要跟着画布尺寸走 */
+function resizeBloom(){
+  if (!bloom) return;
+  const w = Math.max(2, Math.floor(W * pr)), h = Math.max(2, Math.floor(H * pr));
+  const bw = Math.max(2, Math.floor(w / 4)), bh = Math.max(2, Math.floor(h / 4));
+  bloom.sceneRT.setSize(w, h); bloom.a.setSize(bw, bh); bloom.b.setSize(bw, bh);
+  bloom.bright.uniforms.uTexel.value.set(1 / w, 1 / h);
+  bloom.w = bw; bloom.h = bh;
+}
+
+/* 一帧的辉光渲染：场景进 RT → 亮部 → 两次模糊 → 与场景叠加 */
+function renderBloom(){
+  const bl = bloom;
+  renderer.setRenderTarget(bl.sceneRT); renderer.clear(); renderer.render(scene, camera);
+  bl.quad.material = bl.bright; bl.bright.uniforms.tSrc.value = bl.sceneRT.texture;
+  renderer.setRenderTarget(bl.a); renderer.render(bl.qScene, bl.qCam);
+  bl.quad.material = bl.blur; bl.blur.uniforms.tSrc.value = bl.a.texture;
+  bl.blur.uniforms.uDir.value.set(1 / bl.w, 0);
+  renderer.setRenderTarget(bl.b); renderer.render(bl.qScene, bl.qCam);
+  bl.blur.uniforms.tSrc.value = bl.b.texture;
+  bl.blur.uniforms.uDir.value.set(0, 1 / bl.h);
+  renderer.setRenderTarget(bl.a); renderer.render(bl.qScene, bl.qCam);
+  bl.quad.material = bl.comp; bl.comp.uniforms.tScene.value = bl.sceneRT.texture;
+  bl.comp.uniforms.tBloom.value = bl.a.texture;
+  renderer.setRenderTarget(null); renderer.render(bl.qScene, bl.qCam);
+}
 /* 3D 起不来时，把**真正的原因**告诉用户（原来一律说"WebGL 不可用"，把"资源没加载到"也怪到浏览器头上） */
 function showGlFail(err){
   var el = $('#glFail'); if (!el) return;
@@ -1418,7 +1477,7 @@ function updateScene(dt){
   if (pullDirty && SC.pts && SC.lines) { SC.pts.geometry.attributes.pull.needsUpdate = true; SC.lines.geometry.attributes.pull.needsUpdate = true; }
   const u = (SC.lines || brainLines).material.uniforms;
   u.uMono.value = mono; u.uTime.value = animT; u.uFade.value = camera.position.length() - 1.7;
-  u.uGain.value += ((bloomOn && composer ? .62 : 1) * sizeGain - u.uGain.value) * (1 - Math.exp(-dt * 4));   // 开辉光时线条收一点，避免中心糊成一团
+  u.uGain.value += ((bloomOn && bloom ? .62 : 1) * sizeGain - u.uGain.value) * (1 - Math.exp(-dt * 4));   // 开辉光时线条收一点，避免中心糊成一团
   // 探针拖尾
   probe.trail.unshift(probe.p.clone()); if (probe.trail.length > 16) probe.trail.pop();
   writeSignals();
@@ -1499,7 +1558,7 @@ function frame(now){
   needsT -= dt;
   camera.position.copy(cam.pos); camera.lookAt(cam.tgt);
   updateScene(dt);
-  if (bloomOn && composer) composer.render(); else renderer.render(scene, camera);
+  if (bloomOn && bloom) renderBloom(); else renderer.render(scene, camera);
   // 帧率 + 自动降档
   fpsN++; fpsT += Math.min(real, 2);
   if (fpsT >= 1) {
@@ -1519,7 +1578,7 @@ function layout(){
   if (nr) nr.classList.toggle('narrow', narrow);
   if (!glOK) return;
   renderer.setPixelRatio(pr); renderer.setSize(W, H, false);
-  if (composer) { composer.setPixelRatio(pr); composer.setSize(W, H); }
+  resizeBloom();
   camera.aspect = W / H;
   // 整屏星场：取景半径 = 记忆星团 + 远处那颗黑洞
   const t = Math.tan(camera.fov * Math.PI / 360), Rr = 2.15;
