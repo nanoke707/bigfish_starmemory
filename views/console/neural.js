@@ -80,14 +80,16 @@ const PROOF = 12, CRAWLER = 13, NCL = 13;               // 0 中枢 / 1..11 星�
 /* ===== 3D 场景层：0 = 恒星(bot 本体)，1..M = 一条条记忆，M+1 = 黑洞 ===== */
 const MAXMEM = 22;                                   // 屏幕上同时存在的记忆星（记忆慢慢攒，不用多）
 const HOLE = {r: .052};                              // 视界半径：按视口短边比例画 → 与分辨率无关
-const HOLE_ANCHOR = {x: .80, y: .74};                 // 视界钉在屏幕的哪个位置（0~1，左上为原点）：右下角，避开「配置」按钮与署名
+const HOLE_ANCHOR = {x: .80, y: .74};                 // 视界的「家」在屏幕的哪个位置（0~1，左上为原点）：右下角，避开「配置」按钮
 const HOLE_TWIST = 1.25;                              // 记忆星被吸入时的旋进角（弧度）：绕着视界转进去，走弧线不是直线
 const HOLE_DEPTH = 1.15;                             // 视界在深度上离星团有多远（相对相机到星团的距离）
+const HOLE_PARALLAX = .6;                             // 视差系数：镜头一动，视界跟着位移多少（1 = 完全跟随；调小是为了不让它飞出画面）
 const AFG = 80;                                      // 着色器里 af[] 的组数上限
 const LINK_SEG = 10;                                  // 关联连线每一段的细分
 const SC = {n: 1, mem: [], col: [], pull: new Float32Array(AFG), bunBase: 2, held: -1, holdAng: 0, absorbed: 0, gone: [], suckMap: {}};
 let GBG = 1;                                         // 背景灰质所在的组号
-let HOLE_L = null;                                   // 视界在 spin 局部坐标里的位置（每帧按屏幕锚点重算）
+let HOLE_L = null;                                   // 视界在 spin 局部坐标里的位置（每帧按真实 3D 位置重算）
+let HOLE_W = null;                                   // 视界在世界坐标里的位置（随镜头位移而位移）
 
 // 记忆类型 = 工作流：决定这颗星归属哪个星域、最终落到哪个状态环
 const TYPE_ZH = {fact: '事实', event: '经历', preference: '偏好', promise: '约定',
@@ -158,6 +160,7 @@ const chanN = CH.map(() => 0), chanFlash = CH.map(() => 0);
 let boost = 0, lastHand = null, bunHot = new Float32Array(AFG);
 let sceneT = 0;                                  // 轨道时钟：一直推进（只有被悬停的那颗星单独停住）
 let camT = 0, spinZ = 0;                         // 镜头与整体自转时钟：悬停时停住
+let camInit = false;                              // 镜头是否已经落在基准机位上
 
 // 星星池：插件接口真实返回的星星，按「该被想起」排序轮流上场
 const starPool = (MODEL.stars || []).map(s => ({
@@ -786,13 +789,16 @@ function starTex(){
   STAR_TEX = new THREE.CanvasTexture(c);
   return STAR_TEX;
 }
-/* 黑洞是屏幕空间的：视界钉死在屏幕锚点上，半径按视口短边算 → 跟相机、星团公转都无关 */
+/* 视界是屏幕空间的四边形：中心 = 它在 3D 里的位置投影到屏幕（随镜头位移而位移），半径随距离缩放 */
 function syncHole(rw, rh){
   if (!SC.holeUni) return;
   const u = SC.holeUni;
-  const R = HOLE.r * Math.min(rw, rh);
+  const nx = SC.holeNDC ? SC.holeNDC.x : (HOLE_ANCHOR.x * 2 - 1);
+  const ny = SC.holeNDC ? SC.holeNDC.y : (1 - HOLE_ANCHOR.y * 2);
+  const dRef = Math.max(1, fitD) * HOLE_DEPTH;
+  const R = HOLE.r * Math.min(rw, rh) * (SC.holeDist ? dRef / SC.holeDist : 1);
   u.uRes.value.set(rw, rh);
-  u.uCtr.value.set(HOLE_ANCHOR.x * rw, HOLE_ANCHOR.y * rh);
+  u.uCtr.value.set((nx * .5 + .5) * rw, (1 - (ny * .5 + .5)) * rh);
   u.uR.value = R;
   u.uHalf.value = R * 6;
   u.uTime.value = animT;
@@ -872,20 +878,51 @@ function buildAccretion(){
   SC.accLine = new THREE.LineSegments(lns.g, lm);
   SC.accLine.frustumCulled = false; SC.accLine.renderOrder = 840; scene.add(SC.accLine);
 }
-/* 视界钉在屏幕上：把屏幕锚点反算成 3D 世界点，再换算到 spin 局部坐标（记忆星被卷向这里） */
+/* 视界不再是一张钉在屏幕上的贴纸，而是一个真的 3D 物体 —— 镜头一动，它跟着位移：
+     ① 用「不含用户 yaw/pitch 的基准机位」摆一个世界点 P0（自动环绕带着它走，它稳在角落）；
+     ② 用真实镜头把 P0 投影出来，和屏幕锚点按视差系数混合 → 得到它此刻的屏幕位置；
+     ③ 再反投影回 3D（保持同样的距离）→ 视界的真实世界位置，记忆星就是卷向这里。
+   这样「黑洞随镜头位移而位移」，同时视界、吸积盘、记忆星的螺旋三者永远对齐。 */
+const _hb = {pos: null, tgt: null, f: null, r: null, u: null, dir: null};
 let _hv3 = null;
-function syncHoleTarget(){
-  if (!glOK || !HOLE_L) return;
+function syncHoleWorld(){
+  if (!glOK) return;
   if (!_hv3) _hv3 = new THREE.Vector3();
+  if (!HOLE_W) HOLE_W = new THREE.Vector3();
+  if (!HOLE_L) HOLE_L = new THREE.Vector3();
+  if (!_hb.pos) { _hb.pos = new THREE.Vector3(); _hb.tgt = new THREE.Vector3(); _hb.f = new THREE.Vector3();
+                  _hb.r = new THREE.Vector3(); _hb.u = new THREE.Vector3(); _hb.dir = new THREE.Vector3(); }
+  const b = camBase(camT);
+  const az = b.az, el = b.el;
+  _hb.pos.set(b.r * Math.sin(az) * Math.cos(el) + b.tx, b.r * Math.sin(el) + b.ty, b.r * Math.cos(az) * Math.cos(el));
+  _hb.tgt.set(b.tx, b.ty, 0);
+  // 基准机位下、屏幕锚点那条视线上的世界点 P0
+  const t = Math.tan(camera.fov * Math.PI / 360);
+  _hb.f.copy(_hb.tgt).sub(_hb.pos).normalize();
+  _hb.r.set(-_hb.f.z, 0, _hb.f.x).normalize();          // cross(forward, up) → 画面右向
+  _hb.u.crossVectors(_hb.r, _hb.f);
   const nx = HOLE_ANCHOR.x * 2 - 1, ny = 1 - HOLE_ANCHOR.y * 2;
+  _hb.dir.copy(_hb.f).addScaledVector(_hb.r, nx * t * camera.aspect).addScaledVector(_hb.u, ny * t).normalize();
+  _hb.dir.multiplyScalar(Math.max(1, fitD) * HOLE_DEPTH).add(_hb.pos);
+  // 真实镜头投影 P0 → 与锚点按视差系数混合
   camera.updateMatrixWorld();
-  _hv3.set(nx, ny, .5).unproject(camera);
-  _hv3.sub(camera.position).normalize();
-  _hv3.multiplyScalar(Math.max(1, fitD) * HOLE_DEPTH).add(camera.position);
-  if (SC.holePos) SC.holePos.copy(_hv3);
+  const dist = _hb.dir.distanceTo(camera.position);
+  _hb.dir.project(camera);
+  if (!SC.holeProj) SC.holeProj = {x: 0, y: 0, z: 0};
+  SC.holeProj.x = _hb.dir.x; SC.holeProj.y = _hb.dir.y; SC.holeProj.z = _hb.dir.z;
+  const mx = nx + (_hb.dir.x - nx) * HOLE_PARALLAX;
+  const my = ny + (_hb.dir.y - ny) * HOLE_PARALLAX;
+  if (!SC.holeNDC) SC.holeNDC = {x: nx, y: ny};
+  SC.holeNDC.x = mx; SC.holeNDC.y = my;
+  SC.holeDist = dist;
+  // 反投影回 3D（同样的距离）→ 视界的世界位置
+  _hv3.set(mx, my, .5).unproject(camera);
+  _hv3.sub(camera.position).normalize().multiplyScalar(dist).add(camera.position);
+  HOLE_W.copy(_hv3);
+  if (SC.holePos) SC.holePos.copy(HOLE_W);
   // 世界 → spin 局部（spin 只绕 z 轴转 θ）
   const th = spinZ * .035, cs = Math.cos(th), sn = Math.sin(th);
-  HOLE_L.set(_hv3.x * cs + _hv3.y * sn, -_hv3.x * sn + _hv3.y * cs, _hv3.z);
+  HOLE_L.set(HOLE_W.x * cs + HOLE_W.y * sn, -HOLE_W.x * sn + HOLE_W.y * cs, HOLE_W.z);
 }
 
 const RW = 4096, RH = 112, TW = 4096, TH = 32;
@@ -1185,7 +1222,8 @@ const MODES = [{id: 'orbit', zh: '环绕'}, {id: 'front', zh: '正视'}, {id: 't
 let modeI = 0;
 const cam = glOK ? {pos: new THREE.Vector3(0, .4, 14), tgt: new THREE.Vector3(), want: new THREE.Vector3(), wantT: new THREE.Vector3(), yaw: 0, pitch: 0, zoom: 1, userT: 0} : null;
 let fitD = 10, W = 1, H = 1, narrow = false, bs = .5, sizeGain = 1;
-function camWant(t){
+/* 基准机位（不含用户拖出来的 yaw/pitch）：自动环绕用它，视界的「家」也用它 */
+function camBase(t){
   const D = fitD * cam.zoom;
   let az = 0, el = 0, r = D, tx = 0, ty = 0;
   switch (MODES[modeI].id) {
@@ -1194,9 +1232,13 @@ function camWant(t){
     case 'tilt':  az = .8 + .06 * Math.sin(t * .09); el = .28 + .05 * Math.sin(t * .07); r = D; tx = -.15; ty = .14; break;
     case 'close': az = 1.02 + .12 * Math.sin(t * .05); el = -.16 + .07 * Math.sin(t * .07); r = D * .45; tx = 1.1; ty = .35; break;
   }
-  az += cam.yaw; el = clamp(el + cam.pitch, -1.25, 1.25);
-  cam.want.set(r * Math.sin(az) * Math.cos(el) + tx, r * Math.sin(el) + ty, r * Math.cos(az) * Math.cos(el));
-  cam.wantT.set(tx, ty, 0);
+  return {az, el, r, tx, ty};
+}
+function camWant(t){
+  const b = camBase(t);
+  const az = b.az + cam.yaw, el = clamp(b.el + cam.pitch, -1.25, 1.25);
+  cam.want.set(b.r * Math.sin(az) * Math.cos(el) + b.tx, b.r * Math.sin(el) + b.ty, b.r * Math.cos(az) * Math.cos(el));
+  cam.wantT.set(b.tx, b.ty, 0);
 }
 
 /* ================= 4. DOM（干净版：只剩悬停浮层和配置按钮） ================= */
@@ -1318,8 +1360,8 @@ function updateScene(dt){
   dust.rotation.y = animT * .004; dust.rotation.x = animT * .002;
   // 轨道时钟 + 每颗记忆星的位置 / 亮度
   if (SC.uni) SC.uni.uOrbit.value = sceneT;
-  // 视界钉在屏幕锚点上 → 反算出 3D 引力目标（记忆星就是卷向这里）
-  syncHoleTarget();
+  // 视界的世界位置（随镜头位移而位移）→ 记忆星卷向这里
+  syncHoleWorld();
   for (let g = 1; g < SC.n; g++) {
     const m = SC.mem[g - 1], spr = SC.memSpr && SC.memSpr[g - 1];
     if (!m || !spr) continue;
@@ -1338,10 +1380,12 @@ function updateScene(dt){
   // 浮层：恒星的名字和黑洞的位置跟着 3D 走
   if (SC.ovl) {
     const [bx, by] = screenOf(CL[0]);
+    const nx = SC.holeNDC ? SC.holeNDC.x : (HOLE_ANCHOR.x * 2 - 1);
+    const ny = SC.holeNDC ? SC.holeNDC.y : (1 - HOLE_ANCHOR.y * 2);
     SC.ovl.style.setProperty('--bx', bx.toFixed(1) + 'px');
     SC.ovl.style.setProperty('--by', by.toFixed(1) + 'px');
-    SC.ovl.style.setProperty('--hx', (HOLE_ANCHOR.x * W).toFixed(1) + 'px');
-    SC.ovl.style.setProperty('--hy', (HOLE_ANCHOR.y * H).toFixed(1) + 'px');
+    SC.ovl.style.setProperty('--hx', ((nx * .5 + .5) * W).toFixed(1) + 'px');
+    SC.ovl.style.setProperty('--hy', ((1 - (ny * .5 + .5)) * H).toFixed(1) + 'px');
   }
 }
 function decay(dt){
@@ -1375,6 +1419,7 @@ function frame(now){
   if (!glOK) return;
   if (cam.userT > 0) cam.userT -= dt; else { cam.yaw *= Math.exp(-dt * .7); cam.pitch *= Math.exp(-dt * .7); }
   camWant(camT);
+  if (!camInit) { cam.pos.copy(cam.want); cam.tgt.copy(cam.wantT); camInit = true; }   // 开场直接落在基准机位（别让视界从画外滑进来）
   const k = 1 - Math.exp(-dt * 1.5);
   cam.pos.lerp(cam.want, k); cam.tgt.lerp(cam.wantT, k);
   const moving = cam.pos.distanceToSquared(cam.want) > 1e-5 || cam.userT > 0;
@@ -1669,13 +1714,28 @@ host.__nr = {ff(sec){ for (let t = 0; t < sec; t += .05) { simStep(.05); decay(.
                              m.suck = Math.min(1, (m.suck || 0) + .05 * (m.status === 'archived' ? 1 / 46 : 1 / 68));
                              SC.suckMap[m.id] = m.suck; } }
                          applyPull(); needsT = 1; },
+              /* 把镜头推到基准机位（自动化探针用：无头环境帧率低，等不到它自己收敛） */
+              cam(sec){ for (let t = 0; t < (sec || 3); t += .05) { camT += .05; spinZ += .05; camWant(camT);
+                           const k = 1 - Math.exp(-.05 * 1.5); cam.pos.lerp(cam.want, k); cam.tgt.lerp(cam.wantT, k); }
+                         camera.position.copy(cam.pos); camera.lookAt(cam.tgt); camera.updateMatrixWorld();
+                         syncHoleWorld(); syncHole(W * pr, H * pr); needsT = 1; },
+              /* 把镜头偏一个角度（自动化探针/截图用）：视界会跟着位移 */
+              yaw(v){ cam.yaw = v || 0; cam.pitch = 0; cam.userT = 9999; camWant(camT);
+                      cam.pos.copy(cam.want); cam.tgt.copy(cam.wantT);
+                      camera.position.copy(cam.pos); camera.lookAt(cam.tgt); camera.updateMatrixWorld();
+                      syncHoleWorld(); syncHole(W * pr, H * pr); needsT = 1; },
               /* 吸积盘的现状（给自动化探针用） */
               acc(){ if (!SC.accUni) return {has: false};
                      return {has: true, pts: SC.accPts ? SC.accPts.geometry.attributes.aSeed.count : 0,
                              segs: SC.accLine ? SC.accLine.geometry.attributes.aSeed.count : 0,
                              ctr: [SC.accUni.uCtr.value.x, SC.accUni.uCtr.value.y], r: SC.accUni.uR.value,
                              gain: SC.accUni.uGain.value, order: SC.accPts ? SC.accPts.renderOrder : -1,
-                             holeOrder: SC.hole ? SC.hole.renderOrder : -1, inScene: !!SC.accPts && !!SC.accPts.parent}; },
+                             holeOrder: SC.hole ? SC.hole.renderOrder : -1, inScene: !!SC.accPts && !!SC.accPts.parent,
+                             ndc: SC.holeNDC ? [SC.holeNDC.x, SC.holeNDC.y] : null,
+                             proj: SC.holeProj ? [SC.holeProj.x, SC.holeProj.y] : null,
+                             dist: SC.holeDist,
+                             camPos: [camera.position.x, camera.position.y, camera.position.z],
+                             world: HOLE_W ? [HOLE_W.x, HOLE_W.y, HOLE_W.z] : null}; },
               setModel, model: MODEL, feed, tasks, stars: starPool, ag: AG,
               /* 给自动化探针用 */
               starScreen(){ return SC.mem.map((m, i) => { const g = i + 1, q = starPos(g, _sp);
@@ -1688,7 +1748,9 @@ host.__nr = {ff(sec){ for (let t = 0; t < sec; t += .05) { simStep(.05); decay(.
                                     camWant: [cam.want.x, cam.want.y, cam.want.z], fitD: fitD,
                                     fade1: SC.mem[0] ? SC.mem[0].fade : null, suck1: SC.mem[0] ? (SC.mem[0].suck || 0) : null}; },
               marks(){ if (!glOK) return null; const b = screenOf(CL[0]);
-                       const hx = HOLE_ANCHOR.x * W, hy = HOLE_ANCHOR.y * H;
+                       const nx = SC.holeNDC ? SC.holeNDC.x : (HOLE_ANCHOR.x * 2 - 1);
+                       const ny = SC.holeNDC ? SC.holeNDC.y : (1 - HOLE_ANCHOR.y * 2);
+                       const hx = (nx * .5 + .5) * W, hy = (1 - (ny * .5 + .5)) * H;
                        return {bot: {x: b[0], y: b[1]}, hole: {x: hx, y: hy}, groups: SC.n, mems: SC.mem.length, absorbed: SC.absorbed,
                                holeWorld: SC.holePos ? [SC.holePos.x, SC.holePos.y, SC.holePos.z] : [0, 0, 0], cam: {yaw: cam.yaw, pitch: cam.pitch, zoom: cam.zoom},
                                 holeDbg: SC.holeUni ? {inScene: !!SC.hole.parent, vis: SC.hole.visible,
@@ -1705,8 +1767,10 @@ host.__nr = {ff(sec){ for (let t = 0; t < sec; t += .05) { simStep(.05); decay(.
                         let orange = 0, cyan = 0, bright = 0, sum = 0;
                         for (let i = 0; i < RW * RH; i++) { const r = buf[i*4], g = buf[i*4+1], b = buf[i*4+2], L = r+g+b; sum += L;
                           if (L > 120) bright++; if (r > 90 && r > b * 1.5 && g > b) orange++; if (g > 80 && b > 80 && r < g * .85) cyan++; }
-                        // 黑洞暗盘：视界内部应该几乎全黑（视界钉在屏幕锚点上）
-                        const cx = Math.round(HOLE_ANCHOR.x * RW), cy = Math.round((1 - HOLE_ANCHOR.y) * RH);
+                        // 黑洞暗盘：视界内部应该几乎全黑（视界在屏幕上的位置随镜头而动）
+                        const nx = SC.holeNDC ? SC.holeNDC.x : (HOLE_ANCHOR.x * 2 - 1);
+                        const ny = SC.holeNDC ? SC.holeNDC.y : (1 - HOLE_ANCHOR.y * 2);
+                        const cx = Math.round((nx * .5 + .5) * RW), cy = Math.round((ny * .5 + .5) * RH);
                         let discDark = 0, discTotal = 0, ringLum = 0, ringTotal = 0;
                         for (let y = cy - 6; y <= cy + 6; y++) for (let x = cx - 6; x <= cx + 6; x++) {
                           if (x < 0 || y < 0 || x >= RW || y >= RH) continue;
