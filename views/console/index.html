@@ -6,7 +6,8 @@
   <title>咸鱼星空记忆 · 神经星环</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@800;900&family=Big+Shoulders+Stencil+Display:wght@900&family=JetBrains+Mono:wght@400;500;700;800&family=Michroma&family=Noto+Sans+SC:wght@400;500;700;900&family=Syncopate:wght@400;700&display=swap">
+  <!-- 字体走 CDN，但**不阻塞渲染**：网络不通时立刻用兜底字体出画面，不让整页卡住 -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@800;900&family=Big+Shoulders+Stencil+Display:wght@900&family=JetBrains+Mono:wght@400;500;700;800&family=Michroma&family=Noto+Sans+SC:wght@400;500;700;900&family=Syncopate:wght@400;700&display=swap" media="print" onload="this.media='all'">
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
@@ -129,7 +130,9 @@
 .tip strong{color:var(--ink);font-weight:500}
 .tip span{display:block}
 .tip .h{color:var(--mute);font-size:10px;margin-top:3px}
-.glfail{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);max-width:340px;text-align:center;font-family:var(--cjk);font-size:13px;line-height:1.7;color:var(--ink2);border:1px solid var(--hair2);padding:14px 18px;background:rgba(4,7,13,.85)}
+.glfail{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);max-width:380px;text-align:center;font-family:var(--cjk);font-size:13px;line-height:1.7;color:var(--ink2);border:1px solid var(--hair2);padding:14px 18px;background:rgba(4,7,13,.85)}
+.glfail b{color:var(--ink);font-weight:700}
+.glfail .gf-dim{display:block;margin-top:6px;font-size:11px;opacity:.62}
 </style>
 
 <canvas class="gl" id="gl" aria-label="记忆星场：正中的恒星星云代表 bot 本体，周围的星星是一条条记忆并各自绕着它公转，远处是吞噬记忆的黑洞。悬停会钉住那一颗星并显示这条记忆，点击星星进调试台"></canvas>
@@ -138,7 +141,7 @@
  <button class="tb" type="button" data-series-pick>配置<b>设置与调试</b></button>
 </div>
 <div class="tip" id="tip" hidden></div>
-<div class="glfail" id="glFail" hidden>这台设备的浏览器没法显示 3D 画面（WebGL 不可用）。换 Chrome / Edge 打开即可看到星场。</div>
+<div class="glfail" id="glFail" hidden>3D 画面没能加载出来。刷新页面重试；详细信息见浏览器控制台（F12）。</div>
 </template>
 
   <script src="/api/plugin/page/bridge-sdk.js"></script>

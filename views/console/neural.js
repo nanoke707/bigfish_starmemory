@@ -9,29 +9,74 @@
    改动：把「智能体 / 工作流 / 渠道」换成插件的「星域 / 记忆类型 /
          记忆状态」，数据全部来自插件真实接口；其余渲染与交互原样保留。
    ============================================================ */
+/* three.js 从哪来：**先本地副本**（views/console/vendor/three.min.js），再退回 CDN。
+   —— 之前只走 CDN，内网 / 离线 / 被代理拦住的机器就永远加载不到，
+   整块 3D 直接不显示（用户报的"WebGL 不可用"其实是 three.js 没到）。
+   辉光（postprocessing）那几个文件只走 CDN，**拿不到就跳过**：没有辉光也能正常出画面。 */
 var BSM_THREE_CDN = "https://cdn.jsdelivr.net/npm/three@0.147.0/";
-var BSM_THREE_DEPS = ["build/three.min.js", "examples/js/shaders/CopyShader.js",
-  "examples/js/shaders/LuminosityHighPassShader.js", "examples/js/postprocessing/EffectComposer.js",
-  "examples/js/postprocessing/RenderPass.js", "examples/js/postprocessing/ShaderPass.js",
-  "examples/js/postprocessing/UnrealBloomPass.js"].map(function (p) { return BSM_THREE_CDN + p; });
+var BSM_THREE_DEPS = [
+  {local: "./vendor/three.min.js", cdn: BSM_THREE_CDN + "build/three.min.js", must: true},
+  {cdn: BSM_THREE_CDN + "examples/js/shaders/CopyShader.js"},
+  {cdn: BSM_THREE_CDN + "examples/js/shaders/LuminosityHighPassShader.js"},
+  {cdn: BSM_THREE_CDN + "examples/js/postprocessing/EffectComposer.js"},
+  {cdn: BSM_THREE_CDN + "examples/js/postprocessing/RenderPass.js"},
+  {cdn: BSM_THREE_CDN + "examples/js/postprocessing/ShaderPass.js"},
+  {cdn: BSM_THREE_CDN + "examples/js/postprocessing/UnrealBloomPass.js"}
+];
+var BSM_LOAD_T_MUST = 8000;      // 必需文件的等待上限（本地副本正常是毫秒级）
+var BSM_LOAD_T_OPT = 2500;       // 可选文件（辉光）的等待上限：CDN 不通也别把页面拖死
+var BSM_OPT_SKIP_KEY = "bsm_cdn_bloom_unreachable";   // 记下"CDN 不通"，以后就不试了
+
+function BSM_loadOne(src, ms) {
+  return new Promise(function (res) {
+    if (!src) return res(false);
+    var done = false, s = document.createElement("script");
+    var fin = function (ok) { if (done) return; done = true; res(ok); };
+    s.src = src; s.async = false;
+    s.onload = function () { fin(true); };
+    s.onerror = function () { fin(false); };
+    setTimeout(function () { fin(false); }, ms || BSM_LOAD_T_OPT);
+    document.head.appendChild(s);
+  });
+}
 
 function BSM_loadScripts(list) {
-  return list.reduce(function (p, src) {
+  var arr = (list || []).map(function (d) { return typeof d === "string" ? {cdn: d} : d; });
+  var must = arr.filter(function (d) { return d.must; });
+  var opt = arr.filter(function (d) { return !d.must; });
+  var skipOpt = false;
+  try {                                  // 记下"CDN 不通"，6 小时内不再试（网络可能恢复）
+    var ts = parseInt(localStorage.getItem(BSM_OPT_SKIP_KEY) || "0", 10);
+    skipOpt = ts > 0 && (Date.now() - ts) < 6 * 3600 * 1000;
+  } catch (_) {}
+  if (skipOpt) opt = [];
+  // 可选项与必需项**同时**开始加载 → 总耗时 = 最慢的那个，不是相加
+  var pOpt = Promise.all(opt.map(function (d) { return BSM_loadOne(d.cdn, BSM_LOAD_T_OPT); }));
+  var chain = must.reduce(function (p, d) {
     return p.then(function () {
-      return new Promise(function (res) {
-        var s = document.createElement("script");
-        s.src = src;
-        s.onload = res;
-        s.onerror = res;
-        document.head.appendChild(s);
+      return (d.local ? BSM_loadOne(d.local, BSM_LOAD_T_MUST) : Promise.resolve(false)).then(function (ok) {
+        return ok ? true : (d.cdn ? BSM_loadOne(d.cdn, BSM_LOAD_T_MUST) : false);
       });
     });
   }, Promise.resolve());
+  return chain.then(function (ok) {
+    if (!ok) throw new Error("three.js 加载失败（本地副本与 CDN 都不通）");
+    // 可选项**不阻塞挂载**：它们晚到也没关系，到了再补辉光（见 setupBloom）
+    pOpt.then(function (r) {
+      if (opt.length && !r.some(Boolean)) {          // 辉光那几个一个都没到 → 记下来，下次不再试
+        try { localStorage.setItem(BSM_OPT_SKIP_KEY, String(Date.now())); } catch (_) {}
+      } else if (r.some(Boolean) && window.BSMNeural && window.BSMNeural.onOptionalReady) {
+        window.BSMNeural.onOptionalReady();
+      }
+    });
+    return true;
+  });
 }
 
 window.BSMNeural = {
   deps: BSM_THREE_DEPS,
   loadScripts: BSM_loadScripts,
+  onOptionalReady: null,          // 可选依赖（辉光）到位后回调，用来补接辉光
   mount: mountNeural
 };
 
@@ -976,16 +1021,43 @@ try {
   buildAccretion();
   buildHud();
   buildSky();
-  if (THREE.EffectComposer && THREE.UnrealBloomPass && THREE.RenderPass) {
+  glOK = true;
+  setupBloom();                     // 辉光文件在的话就接上（不在也能正常出画面）
+} catch (e) {
+  console.error(e);
+  showGlFail(e);
+}
+
+/* 接上辉光：three 的 postprocessing 文件可能晚到（CDN），到了再补上也行 */
+function setupBloom(){
+  if (!glOK || composer || !window.THREE) return;
+  if (!THREE.EffectComposer || !THREE.UnrealBloomPass || !THREE.RenderPass) { bloomOn = false; return; }
+  try {
     composer = new THREE.EffectComposer(renderer);
     composer.addPass(new THREE.RenderPass(scene, camera));
     bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(512, 512), .62, .42, .3);
     composer.addPass(bloomPass);
-  } else bloomOn = false;
-  glOK = true;
-} catch (e) {
-  console.error(e);
-  $('#glFail').hidden = false;
+    bloomOn = true;
+    if (W > 1) { composer.setPixelRatio(pr); composer.setSize(W, H); }
+    needsT = 1;
+  } catch (e) { console.error(e); composer = null; bloomOn = false; }
+}
+/* CDN 上的辉光文件晚到时回调这里 */
+if (window.BSMNeural) window.BSMNeural.onOptionalReady = function () { setupBloom(); };
+
+/* 3D 起不来时，把**真正的原因**告诉用户（原来一律说"WebGL 不可用"，把"资源没加载到"也怪到浏览器头上） */
+function showGlFail(err){
+  var el = $('#glFail'); if (!el) return;
+  el.hidden = false;
+  if (!window.THREE) {
+    el.innerHTML = '<b>3D 引擎没能加载（three.js）</b><br>本地副本与 CDN 都没能取到它。' +
+      '通常是网络 / 代理拦住了静态资源，或浏览器装了拦截扩展。<br>' +
+      '<span class="gf-dim">详细信息见浏览器控制台（F12）</span>';
+  } else {
+    el.innerHTML = '<b>这台设备的浏览器没法显示 3D 画面（WebGL 不可用）</b><br>' +
+      '换 Chrome / Edge 打开，或在浏览器设置里开启「使用硬件加速」后刷新。' +
+      '<span class="gf-dim">详细信息见浏览器控制台（F12）</span>';
+  }
 }
 
 /* ---------- 信号 ---------- */
